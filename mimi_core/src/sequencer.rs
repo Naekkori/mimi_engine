@@ -28,7 +28,11 @@ pub enum MidiEngineEvent {
     TickUpdate{
         current_tick: u64,
         total_tick: u64,
-    }
+    },
+    ChannelLevel {
+        port: u8,
+        levels: [u8; 16],
+    },
 }
 
 #[derive(Debug, Clone)]

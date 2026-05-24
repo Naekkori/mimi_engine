@@ -84,6 +84,7 @@ struct AudioPlaybackContext {
     bank_msb: [[u8; 16]; 2],
     bank_lsb: [[u8; 16]; 2],
     drum_channels: [[bool; 16]; 2],
+    channel_velocities: [[u8; 16]; 2],
 }
 
 impl AudioPlaybackContext {
@@ -227,6 +228,12 @@ impl AudioPlaybackContext {
                                             (raw_key as i8 + self.master_key).clamp(0, 127) as u8
                                         };
 
+                                        let p = port as usize;
+                                        let ch = channel as usize;
+                                        if vel > self.channel_velocities[p][ch] {
+                                            self.channel_velocities[p][ch] = vel;
+                                        }
+
                                         self.active_notes.push((port, channel, final_key));
                                         let _ = synth.note_on(target_channel, final_key as u32, vel as u32);
                                     } else {
@@ -367,6 +374,18 @@ impl AudioPlaybackContext {
             current_tick: self.sequencer.current_tick as u64,
             total_tick: self.sequencer.total_ticks as u64,
         });
+
+        // 소프트 decay: 버퍼 주기마다 각 채널 velocity를 서서히 감쇠
+        for port in 0..2usize {
+            for ch in 0..16usize {
+                self.channel_velocities[port][ch] =
+                    self.channel_velocities[port][ch].saturating_sub(4);
+            }
+            let _ = self.ui_tx.send(MidiEngineEvent::ChannelLevel {
+                port: port as u8,
+                levels: self.channel_velocities[port],
+            });
+        }
     }
 }
 
@@ -460,6 +479,7 @@ pub fn spawn_mimi_engine(
             dc[1][9] = true;
             dc
         },
+        channel_velocities: [[0u8; 16]; 2],
     };
 
     // 5. CPAL 오디오 스트림 생성 (독립 하드웨어 스레드에서 무한 반복 호출됨)

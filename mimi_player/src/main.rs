@@ -29,7 +29,11 @@ struct App {
     player_state: PlayerState,
     song_time: String,
     engine: Option<MimiEngineHandle>,
-    _stream: Option<cpal::Stream>, // 오디오 스트림 수명 유지를 위한 필드
+    _stream: Option<cpal::Stream>,
+
+    // 레벨미터
+    channel_levels_a: [u8; 16],
+    channel_levels_b: [u8; 16],
 
     // 비동기 로딩용 채널
     loading_rx: Option<mpsc::Receiver<Result<(MimiEngineHandle, cpal::Stream), String>>>,
@@ -47,6 +51,8 @@ impl App {
             list_state: ListState::default(),
             engine: None,
             _stream: None,
+            channel_levels_a: [0u8; 16],
+            channel_levels_b: [0u8; 16],
             loading_rx: None,
         }
     }
@@ -124,8 +130,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
             }
         }
 
-        // 입력을 대기 (50ms = 약 20fps, CPU 부하 감소)
-        if event::poll(std::time::Duration::from_millis(50))? {
+        if event::poll(std::time::Duration::from_millis(16))? {
             // MIMI PLAYER 제어 입력 처리
             if let event::Event::Key(key) = event::read()? {
                 // 키를 누를 때만 이벤트를 처리하도록 제한 (Release 이벤트 무시)
@@ -264,6 +269,14 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         app.song_name = text;
                         needs_redraw = true;
                     }
+                    mimi_core::MidiEngineEvent::ChannelLevel { port, levels } => {
+                        if port == 0 {
+                            app.channel_levels_a = levels;
+                        } else {
+                            app.channel_levels_b = levels;
+                        }
+                        needs_redraw = true;
+                    }
                     _ => {}
                 }
             }
@@ -308,18 +321,65 @@ fn render(frame: &mut Frame, app: &mut App) {
         );
         }
         AppState::Playing => {
-        let text = vec![
+        use ratatui::layout::{Constraint, Direction, Layout};
+
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(1),
+            ])
+            .split(block.inner(area));
+
+        frame.render_widget(block.title(" Playback Info ".bold()), area);
+
+        let info_text = vec![
             Line::from(vec![
                 Span::raw("Now Playing: "),
                 Span::styled(&app.song_name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             ]),
-            Line::from(format!("Player State: {:?}", app.player_state)),
-            Line::from(format!("Time: {}", app.song_time)),
-            Line::from(""),
-            Line::from(Span::styled("Press Esc to return to file list", Style::default().fg(Color::Gray))),
+            Line::from(format!("State: {:?}  |  Time: {}", app.player_state, app.song_time)),
         ];
-        let paragraph = Paragraph::new(text).block(block.title(" Playback Info ".bold()));
-        frame.render_widget(paragraph, area);
+        frame.render_widget(Paragraph::new(info_text), outer[0]);
+
+        let meter_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(outer[2]);
+
+        for (port_idx, (meter_area, levels)) in [
+            (meter_layout[0], app.channel_levels_a),
+            (meter_layout[1], app.channel_levels_b),
+        ].iter().enumerate() {
+            let port_label = if port_idx == 0 { "Port A" } else { "Port B" };
+            let port_block = Block::bordered().title(format!(" {port_label} Channel Levels ").bold());
+            let inner = port_block.inner(*meter_area);
+            frame.render_widget(port_block, *meter_area);
+
+            let bar_constraints: Vec<Constraint> = (0..16).map(|_| Constraint::Ratio(1, 16)).collect();
+            let bar_areas = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(bar_constraints)
+                .split(inner);
+
+            for (ch, bar_area) in bar_areas.iter().enumerate() {
+                let vel = levels[ch];
+                let ratio = vel as f64 / 127.0;
+                let color = if vel > 100 {
+                    Color::Red
+                } else if vel > 60 {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                };
+                let gauge = Gauge::default()
+                    .gauge_style(Style::default().fg(color).bg(Color::Black))
+                    .label(format!("{:02}", ch + 1))
+                    .ratio(ratio);
+                frame.render_widget(gauge, *bar_area);
+            }
+        }
     }
         AppState::Loading(progress) => {
             // 로딩 화면 및 로딩 바
