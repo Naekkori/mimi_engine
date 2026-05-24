@@ -174,7 +174,7 @@ impl AudioPlaybackContext {
                         kind,
                     } => {
                         // 듀얼 포트(32채널) 라우팅: Port B(1) 이면 채널 오프셋 16 더함
-                        let target_channel = if port == 1 { channel + 16 } else { channel };
+                        let target_channel = (port as usize * 16) + channel as usize;
 
                         if let midly::TrackEventKind::Midi { message, .. } = kind {
                             match message {
@@ -182,7 +182,7 @@ impl AudioPlaybackContext {
                                     let raw_key = key.as_int();
                                     let vel = vel.as_int();
 
-                                    if vel > 0 {
+                                    if vel > 0 && target_channel < self.synth.channel_count(){
                                         // 조옮김 적용 (표준 9번, 25번 드럼 채널은 조옮김 제외)
                                         let final_key = if target_channel == 9
                                             || target_channel == 25
@@ -193,9 +193,9 @@ impl AudioPlaybackContext {
                                         };
 
                                         // 음걸림 추적 등록 및 노트 온
-                                        self.active_notes.push((target_channel, final_key));
+                                        self.active_notes.push((target_channel as u8, final_key));
                                         let _ = self.synth.send_event(NoteOn {
-                                            channel: target_channel,
+                                            channel: target_channel as u8,
                                             key: final_key,
                                             vel,
                                         });
@@ -209,10 +209,10 @@ impl AudioPlaybackContext {
                                             (raw_key as i8 + self.master_key).clamp(0, 127) as u8
                                         };
                                         self.active_notes.retain(|&(ch, n)| {
-                                            !(ch == target_channel && n == final_key)
+                                            !(ch == target_channel as u8 && n == final_key)
                                         });
                                         let _ = self.synth.send_event(NoteOff {
-                                            channel: target_channel,
+                                            channel: target_channel as u8,
                                             key: final_key,
                                         });
                                     }
@@ -225,17 +225,17 @@ impl AudioPlaybackContext {
                                         (raw_key as i8 + self.master_key).clamp(0, 127) as u8
                                     };
                                     self.active_notes.retain(|&(ch, n)| {
-                                        !(ch == target_channel && n == final_key)
+                                        !(ch == target_channel as u8 && n == final_key)
                                     });
                                     let _ = self.synth.send_event(NoteOff {
-                                        channel: target_channel,
+                                        channel: target_channel as u8,
                                         key: final_key,
                                     });
                                 }
                                 midly::MidiMessage::Controller { controller, value } => {
                                     let _ =
                                         self.synth.send_event(oxisynth::MidiEvent::ControlChange {
-                                            channel: target_channel,   // `channel` 필드는 그대로 유지
+                                            channel: target_channel as u8,   // `channel` 필드는 그대로 유지
                                             ctrl: controller.as_int(), // `controller` 대신 `ctrl`
                                             value: value.as_int(),
                                         });
@@ -243,13 +243,13 @@ impl AudioPlaybackContext {
                                 midly::MidiMessage::ProgramChange { program } => {
                                     let _ =
                                         self.synth.send_event(oxisynth::MidiEvent::ProgramChange {
-                                            channel: target_channel,      // `channel` 필드는 그대로 유지
+                                            channel: target_channel as u8,      // `channel` 필드는 그대로 유지
                                             program_id: program.as_int(), // `program` 대신 `program_id`
                                         });
                                 }
                                 midly::MidiMessage::PitchBend { bend } => {
                                     let _ = self.synth.send_event(oxisynth::MidiEvent::PitchBend {
-                                        channel: target_channel,
+                                        channel: target_channel as u8,
                                         value: bend.as_int() as u16, // U14 타입 변환
                                     });
                                 }
