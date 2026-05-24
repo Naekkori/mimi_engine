@@ -211,6 +211,8 @@ impl AudioPlaybackContext {
                         kind,
                         is_drum_channel,
                     } => {
+                        // 포트 범위 보호 (0 또는 1만 유효)
+                        let port = port.min(1);
                         let target_channel = channel as u32;
                         // 포트에 해당되는 synth 지정
                         let synth = if port == 0 { &self.synth_a } else { &self.synth_b };

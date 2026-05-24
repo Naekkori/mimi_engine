@@ -121,6 +121,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         Ok((handle, stream)) => {
                             app.engine = Some(handle);
                             app._stream = Some(stream);
+                            app.player_state = PlayerState::Playing;
                             app.state = AppState::Playing;
                         }
                         Err(_) => app.state = AppState::Browsing,
@@ -138,10 +139,13 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     continue;
                 }
 
+                // 로딩 중에는 모든 키 입력 차단
+                if matches!(app.state, AppState::Loading(_)) {
+                    continue;
+                }
+
                 match key.code {
-                    // 위/아래 이동
                     event::KeyCode::Up | event::KeyCode::Down if matches!(app.state, AppState::Loading(_)) => {
-                        // 로딩 중에는 리스트 이동 금지
                         continue;
                     }
 
@@ -197,14 +201,16 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         if let Some(handle) = &app.engine {
                             match app.player_state {
                                 PlayerState::Stopped | PlayerState::Paused => {
-                                    handle.send_command(MimiCommand::Play).expect("Failed to play");
-                                    app.player_state = PlayerState::Playing;
-                                    needs_redraw = true;
+                                    if handle.send_command(MimiCommand::Play).is_ok() {
+                                        app.player_state = PlayerState::Playing;
+                                        needs_redraw = true;
+                                    }
                                 }
                                 PlayerState::Playing => {
-                                    handle.send_command(MimiCommand::Pause).expect("Failed to pause");
-                                    app.player_state = PlayerState::Paused;
-                                    needs_redraw = true;
+                                    if handle.send_command(MimiCommand::Pause).is_ok() {
+                                        app.player_state = PlayerState::Paused;
+                                        needs_redraw = true;
+                                    }
                                 }
                             }
                         }
@@ -212,9 +218,10 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     event::KeyCode::Char('s') => {
                         if let Some(handle) = &app.engine {
                             if app.player_state != PlayerState::Stopped {
-                                handle.send_command(MimiCommand::Stop).expect("Failed to stop");
-                                app.player_state = PlayerState::Stopped;
-                                needs_redraw = true;
+                                if handle.send_command(MimiCommand::Stop).is_ok() {
+                                    app.player_state = PlayerState::Stopped;
+                                    needs_redraw = true;
+                                }
                             }
                         }
                     }
@@ -340,6 +347,7 @@ fn render(frame: &mut Frame, app: &mut App) {
                 Span::styled(&app.song_name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             ]),
             Line::from(format!("State: {:?}  |  Time: {}", app.player_state, app.song_time)),
+            Line::from(Span::styled("MIMI (MIDI Engine for Interactive Music & Instrumentation)", Style::default().fg(Color::Gray)))
         ];
         frame.render_widget(Paragraph::new(info_text), outer[0]);
 

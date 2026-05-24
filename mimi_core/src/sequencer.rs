@@ -75,7 +75,8 @@ impl MimiSequencer {
 
                 match &kind {
                     TrackEventKind::Meta(midly::MetaMessage::MidiPort(port)) => {
-                        current_port = port.as_int();
+                        // 포트는 0 또는 1만 지원하므로 범위 초과 시 클램프
+                        current_port = port.as_int().min(1);
                     }
                     TrackEventKind::Meta(midly::MetaMessage::Lyric(bytes)) | 
                     TrackEventKind::Meta(midly::MetaMessage::Text(bytes)) => {
@@ -122,7 +123,7 @@ impl MimiSequencer {
                         let is_gm_reset = data.len() >= 5
                             && data[0] == 0x7E && data[2] == 0x09;
 
-                        let is_gs_reset = data.len() >= 6
+                        let is_gs_reset = data.len() >= 7
                             && data[0] == 0x41 && data[2] == 0x42
                             && data[3] == 0x12 && data[4] == 0x40
                             && data[5] == 0x00 && data[6] == 0x7F;
