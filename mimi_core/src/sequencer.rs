@@ -1,15 +1,20 @@
 use midly::{Smf, TrackEventKind};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MidiFormat {
+    GM,
+    GS,
+    XG,
+}
+
 #[derive(Debug, Clone)]
 pub enum MidiEngineEvent {
-    // 단일 포트(16채널) 기준 미디 메세지 종류
     MidiPlay {
         port: u8,
         channel: u8,
-        is_drum_channel: bool, // 드럼 채널 여부 추가 (10번 또는 11번 채널)
+        is_drum_channel: bool,
         kind: TrackEventKind<'static>,
     },
-    // 템포 변경 이벤트 분리
     TempoChange {
         tempo: u32,
     },
@@ -40,6 +45,7 @@ pub struct MimiSequencer {
     pub current_tick: f64,
     pub microseconds_per_tick: f64,
     pub total_ticks: u32,
+    pub format: MidiFormat,
 }
 
 impl MimiSequencer {
@@ -52,58 +58,46 @@ impl MimiSequencer {
         };
 
         let mut all_events = Vec::new();
+        let mut detected_format = MidiFormat::GM;
 
         // 멀티트랙 미디파일을 단일절대 틱 타임라인으로 병합
         for (_track_idx, track) in smf.tracks.iter().enumerate() {
             let mut accum_tick = 0u32;
+            let mut current_port = 0u8;
 
             for event in track.iter() {
                 accum_tick += event.delta.as_int();
-                let mut priority = 0u32; // 기본은 연주(Note) 우선순위
-                let mut current_port = 0u8;
                 let kind = event.kind.to_static();
 
                 match &kind {
-                    // 포트
                     TrackEventKind::Meta(midly::MetaMessage::MidiPort(port)) => {
                         current_port = port.as_int();
                     }
-                    // 내장가사(Lyric) 및 일반 텍스트(Text) 이벤트 모두 처리
                     TrackEventKind::Meta(midly::MetaMessage::Lyric(bytes)) | 
                     TrackEventKind::Meta(midly::MetaMessage::Text(bytes)) => {
-                        // UTF-8이 아닌 경우(CP949 등)를 고려하여 손실 허용 변환
                         let text = String::from_utf8_lossy(bytes).to_string();
-                        
-                        // 제어 문자나 메타데이터(예: @T, @L 등)가 아닌 실제 텍스트가 있을 때만 추가
                         if !text.is_empty() && !text.starts_with('@') {
-                            priority = 0; 
                             all_events.push(SequenceEvent {
                                 absolute_tick: accum_tick,
-                                priority: priority.try_into().unwrap(),
+                                priority: 0,
                                 inner: MidiEngineEvent::SmfKaraokeText { text },
                             });
                         }
                     }
-                    // 연주이벤트
                     TrackEventKind::Midi { channel, message } => {
-                        // 표준 MIDI 규격에 따라 9번 채널(10번)만 기본 드럼으로 처리
-                        // GS/XG에서는 SysEx를 통해 다른 채널도 드럼으로 바뀔 수 있으나 기본은 9번
-                        let is_drum = u8::from(*channel) == 9; 
-                        
-                        // 우선순위 세분화: 컨트롤러(0) > 프로그램 체인지(1) > 연주(2)
-                        match message {
-                            midly::MidiMessage::Controller { .. } => priority = 0,
-                            midly::MidiMessage::ProgramChange { .. } => priority = 1,
-                            midly::MidiMessage::NoteOn { .. } | midly::MidiMessage::NoteOff { .. } => priority = 2,
-                            _ => priority = 0,
-                        }
+                        let is_drum = u8::from(*channel) == 9;
+                        let priority: u8 = match message {
+                            midly::MidiMessage::ProgramChange { .. } => 1,
+                            midly::MidiMessage::NoteOn { .. } | midly::MidiMessage::NoteOff { .. } => 2,
+                            _ => 0,
+                        };
                         all_events.push(SequenceEvent {
                             absolute_tick: accum_tick,
-                            priority: priority.try_into().unwrap(),
+                            priority,
                             inner: MidiEngineEvent::MidiPlay {
-                                port:current_port,
+                                port: current_port,
                                 channel: u8::from(*channel),
-                                is_drum_channel: is_drum, // 드럼 채널 여부 설정
+                                is_drum_channel: is_drum,
                                 kind: TrackEventKind::Midi {
                                     channel: *channel,
                                     message: *message,
@@ -121,24 +115,32 @@ impl MimiSequencer {
                     }
                     //SysEx를 통한 시스템 리셋 감지
                     TrackEventKind::SysEx(data)=>{
-                        let is_reset = if data.len() >= 5 {
-                            //GM Reset
-                            (data[0] == 0x7E && data[2] == 0x09)||
-                                // GS Reset
-                                (data[0] == 0x41 && data[4] == 0x12 && data[5] == 0x40)||
-                                // GS Mode Set
-                                (data[0] == 0x41 && data[4] == 0x12 && data[5] == 0x00 && data[6] == 0x00 && data[7] == 0x7F)||
-                                // XG System On
-                                (data[0] == 0x43 && data[4] == 0x00 && data[5] == 0x00 && data[6] == 0x7E)
-                        } else { 
-                            false
-                        };
-                        
-                        if is_reset{
+                        let is_gm_reset = data.len() >= 5
+                            && data[0] == 0x7E && data[2] == 0x09;
+
+                        let is_gs_reset = data.len() >= 6
+                            && data[0] == 0x41 && data[2] == 0x42
+                            && data[3] == 0x12 && data[4] == 0x40
+                            && data[5] == 0x00 && data[6] == 0x7F;
+
+                        let is_xg_on = data.len() >= 7
+                            && data[0] == 0x43 && data[2] == 0x4C
+                            && data[3] == 0x00 && data[4] == 0x00
+                            && data[5] == 0x7E && data[6] == 0x00;
+
+                        if is_xg_on {
+                            detected_format = MidiFormat::XG;
+                        } else if is_gs_reset {
+                            detected_format = MidiFormat::GS;
+                        } else if is_gm_reset {
+                            detected_format = MidiFormat::GM;
+                        }
+
+                        if is_gm_reset || is_gs_reset || is_xg_on {
                             all_events.push(SequenceEvent {
                                 absolute_tick: accum_tick,
                                 priority: 0,
-                                inner: MidiEngineEvent::MidiReset
+                                inner: MidiEngineEvent::MidiReset,
                             });
                         }
                     }
@@ -165,6 +167,7 @@ impl MimiSequencer {
             current_tick: 0.0,
             microseconds_per_tick,
             total_ticks,
+            format: detected_format,
         })
     }
     //시간 경과에 따라 틱을 전진시키고

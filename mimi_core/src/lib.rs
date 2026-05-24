@@ -4,7 +4,7 @@ mod sequencer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use fluidlite::{IsSettings, IsSamples, Settings, Synth};
-pub use sequencer::{MidiEngineEvent, MimiSequencer};
+pub use sequencer::{MidiEngineEvent, MidiFormat, MimiSequencer};
 use std::sync::{Arc, Mutex};
 
 /// 외부(UI 등)에서 오디오 엔진으로 보낼 제어 명령
@@ -67,20 +67,23 @@ impl MimiEngineHandle {
 /// 오디오 콜백 스레드와 통신하며 시퀀싱 및 합성을 전담할 오디오 컨텍스트
 struct AudioPlaybackContext {
     sequencer: MimiSequencer,
-    synth_a: Synth, // Port A
-    synth_b: Synth, // Port B
+    synth_a: Synth,
+    synth_b: Synth,
     command_rx: Receiver<MimiCommand>,
     ui_tx: Sender<MidiEngineEvent>,
     status: Arc<Mutex<MimiEngineStatus>>,
 
-    // 내부 상태 트래킹 변수들
     current_state: PlayerState,
     master_key: i8,
     tempo_scale: f32,
     sample_rate: f64,
-    // (port, channel, note)로 튜플을 3차원으로 확장
     active_notes: Vec<(u8, u8, u8)>,
     elapsed_time_sec: f64,
+
+    midi_format: MidiFormat,
+    bank_msb: [[u8; 16]; 2],
+    bank_lsb: [[u8; 16]; 2],
+    drum_channels: [[bool; 16]; 2],
 }
 
 impl AudioPlaybackContext {
@@ -173,22 +176,31 @@ impl AudioPlaybackContext {
             for event in ready_events {
                 match event.inner {
                     MidiEngineEvent::MidiReset => {
-                        // fluidlite: system_reset()으로 모든 노트 오프 및 컨트롤러 리셋
                         let _ = self.synth_a.system_reset();
                         let _ = self.synth_b.system_reset();
 
+                        self.midi_format = self.sequencer.format;
+                        self.bank_msb = [[0u8; 16]; 2];
+                        self.bank_lsb = [[0u8; 16]; 2];
+                        self.drum_channels = [[false; 16]; 2];
+                        self.drum_channels[0][9] = true;
+                        self.drum_channels[1][9] = true;
+
                         for ch in 0u32..16{
-                            //Vol, Expr, Pan 초기화
+                            let _ = self.synth_a.cc(ch, 0, 0);
+                            let _ = self.synth_a.cc(ch, 32, 0);
+                            let _ = self.synth_a.program_change(ch, 0);
                             let _ = self.synth_a.cc(ch, 7, 100);
                             let _ = self.synth_a.cc(ch, 11, 127);
                             let _ = self.synth_a.cc(ch, 10, 64);
-                            let _ = self.synth_a.program_change(ch, 0); //piano
                             let _ = self.synth_a.pitch_bend(ch, 8192);
 
+                            let _ = self.synth_b.cc(ch, 0, 0);
+                            let _ = self.synth_b.cc(ch, 32, 0);
+                            let _ = self.synth_b.program_change(ch, 0);
                             let _ = self.synth_b.cc(ch, 7, 100);
                             let _ = self.synth_b.cc(ch, 11, 127);
                             let _ = self.synth_b.cc(ch, 10, 64);
-                            let _ = self.synth_b.program_change(ch, 0); //piano
                             let _ = self.synth_b.pitch_bend(ch, 8192);
                         }
                     }
@@ -242,10 +254,53 @@ impl AudioPlaybackContext {
                                     let _ = synth.note_off(target_channel, final_key as u32);
                                 }
                                 midly::MidiMessage::Controller { controller, value } => {
-                                    let _ = synth.cc(target_channel, controller.as_int() as u32, value.as_int() as u32);
+                                    let cc_num = controller.as_int();
+                                    let cc_val = value.as_int();
+                                    let p = port as usize;
+                                    let ch = channel as usize;
+
+                                    match cc_num {
+                                        0 => {
+                                            self.bank_msb[p][ch] = cc_val;
+                                        }
+                                        32 => {
+                                            self.bank_lsb[p][ch] = cc_val;
+                                        }
+                                        _ => {
+                                            let _ = synth.cc(target_channel, cc_num as u32, cc_val as u32);
+                                        }
+                                    }
                                 }
                                 midly::MidiMessage::ProgramChange { program } => {
-                                    let _ = synth.program_change(target_channel, u32::from(program.as_int()));
+                                    let p = port as usize;
+                                    let ch = channel as usize;
+                                    let msb = self.bank_msb[p][ch];
+                                    let lsb = self.bank_lsb[p][ch];
+                                    let prog = program.as_int() as u32;
+
+                                    let is_drum = self.drum_channels[p][ch];
+
+                                    let resolved_bank: u32 = match self.midi_format {
+                                        MidiFormat::GM => 0,
+                                        MidiFormat::GS => {
+                                            if is_drum {
+                                                (msb as u32) << 7
+                                            } else {
+                                                0
+                                            }
+                                        }
+                                        MidiFormat::XG => {
+                                            match msb {
+                                                0 => 0,
+                                                127 => 0,
+                                                _ => 0,
+                                            }
+                                        }
+                                    };
+
+                                    let _ = synth.cc(target_channel, 0, resolved_bank >> 7);
+                                    let _ = synth.cc(target_channel, 32, lsb as u32);
+                                    let _ = synth.program_change(target_channel, prog);
                                 }
                                 midly::MidiMessage::PitchBend { bend } => {
                                     let raw = bend.as_int();
@@ -378,8 +433,8 @@ pub fn spawn_mimi_engine(
 
     // 3. 시퀀서 준비
     let sequencer = MimiSequencer::from_byte(&midi_bytes)?;
+    let sequencer_format = sequencer.format;
 
-    // 전체 틱 정보를 상태에 미리 반영
     player_status.lock().unwrap().total_tick = sequencer.total_ticks as u64;
 
     // 4. 오디오 콜백 스레드로 넘겨줄 컨텍스트 객체 생성
@@ -396,6 +451,15 @@ pub fn spawn_mimi_engine(
         sample_rate,
         active_notes: Vec::new(),
         elapsed_time_sec: 0.0,
+        midi_format: sequencer_format,
+        bank_msb: [[0u8; 16]; 2],
+        bank_lsb: [[0u8; 16]; 2],
+        drum_channels: {
+            let mut dc = [[false; 16]; 2];
+            dc[0][9] = true;
+            dc[1][9] = true;
+            dc
+        },
     };
 
     // 5. CPAL 오디오 스트림 생성 (독립 하드웨어 스레드에서 무한 반복 호출됨)
