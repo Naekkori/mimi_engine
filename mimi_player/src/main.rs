@@ -381,11 +381,46 @@ fn render(frame: &mut Frame, app: &mut App) {
                 } else {
                     Color::Green
                 };
-                let gauge = Gauge::default()
-                    .gauge_style(Style::default().fg(color).bg(Color::Black))
-                    .label(format!("{:02}", ch + 1))
-                    .ratio(ratio);
-                frame.render_widget(gauge, *bar_area);
+
+                // 채널 영역을 세로 VU 미터 + 레이블 행으로 분리
+                let ch_layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(1),
+                        Constraint::Length(1),
+                    ])
+                    .split(*bar_area);
+
+                // 미터 영역을 빈 공간(위) + 채워진 공간(아래)으로 분할
+                let filled = (ratio * 100.0).round() as u16;
+                let empty = 100u16.saturating_sub(filled);
+                let bar_layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Percentage(empty),
+                        Constraint::Percentage(filled),
+                    ])
+                    .split(ch_layout[0]);
+
+                // 위쪽 빈 공간
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(Color::Black)),
+                    bar_layout[0],
+                );
+
+                // 아래쪽 채워진 바
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(color)),
+                    bar_layout[1],
+                );
+
+                // 고정 레이블 행
+                frame.render_widget(
+                    Paragraph::new(format!("{:02}", ch + 1))
+                        .style(Style::default().fg(Color::White))
+                        .alignment(ratatui::layout::Alignment::Center),
+                    ch_layout[1],
+                );
             }
         }
     }
