@@ -6,6 +6,7 @@ pub enum MidiEngineEvent {
     MidiPlay {
         port: u8,
         channel: u8,
+        is_drum_channel: bool, // 드럼 채널 여부 추가 (10번 또는 11번 채널)
         kind: TrackEventKind<'static>,
     },
     // 노래방 가사 (내장)
@@ -78,17 +79,22 @@ impl MimiSequencer {
                         }
                     }
                     // 연주이벤트
-                    TrackEventKind::Midi { channel, message } => all_events.push(SequenceEvent {
-                        absolute_tick: accum_tick,
-                        inner: MidiEngineEvent::MidiPlay {
-                            port: current_port,
-                            channel: u8::from(*channel),
-                            kind: TrackEventKind::Midi {
-                                channel: *channel,
-                                message: *message,
+                    TrackEventKind::Midi { channel, message } => {
+                        // 0-indexed 채널 9번(10채널) 또는 10번(11채널)이 드럼 채널
+                        let is_drum = u8::from(*channel) == 9 || u8::from(*channel) == 10;
+                        all_events.push(SequenceEvent {
+                            absolute_tick: accum_tick,
+                            inner: MidiEngineEvent::MidiPlay {
+                                port: current_port,
+                                channel: u8::from(*channel),
+                                is_drum_channel: is_drum, // 드럼 채널 여부 설정
+                                kind: TrackEventKind::Midi {
+                                    channel: *channel,
+                                    message: *message,
+                                },
                             },
-                        },
-                    }),
+                        })
+                    },
                     // 템포 변경 이벤트도 시퀀서가 트래킹할 수 있도록 포함
                     TrackEventKind::Meta(midly::MetaMessage::Tempo(tempo)) => {
                         all_events.push(SequenceEvent {
@@ -96,6 +102,7 @@ impl MimiSequencer {
                             inner: MidiEngineEvent::MidiPlay {
                                 port: 0,
                                 channel: 0,
+                                is_drum_channel: false, // 템포 이벤트는 드럼 채널이 아님
                                 kind: TrackEventKind::Meta(midly::MetaMessage::Tempo(*tempo)),
                             },
                         });

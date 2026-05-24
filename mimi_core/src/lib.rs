@@ -172,6 +172,7 @@ impl AudioPlaybackContext {
                         port,
                         channel,
                         kind,
+                        is_drum_channel
                     } => {
                         // 듀얼 포트(32채널) 라우팅: Port B(1) 이면 채널 오프셋 16 더함
                         let target_channel = (port as usize * 16) + channel as usize;
@@ -183,10 +184,8 @@ impl AudioPlaybackContext {
                                     let vel = vel.as_int();
 
                                     if vel > 0 && target_channel < self.synth.channel_count(){
-                                        // 조옮김 적용 (표준 9번, 25번 드럼 채널은 조옮김 제외)
-                                        let final_key = if target_channel == 9
-                                            || target_channel == 25
-                                        {
+                                        // 조옮김 적용 (드럼 채널은 조옮김 제외)
+                                        let final_key = if is_drum_channel {
                                             raw_key
                                         } else {
                                             (raw_key as i8 + self.master_key).clamp(0, 127) as u8
@@ -201,9 +200,7 @@ impl AudioPlaybackContext {
                                         });
                                     } else {
                                         // Velocity가 0인 NoteOn은 NoteOff와 동일 처리
-                                        let final_key = if target_channel == 9
-                                            || target_channel == 25
-                                        {
+                                        let final_key = if is_drum_channel {
                                             raw_key
                                         } else {
                                             (raw_key as i8 + self.master_key).clamp(0, 127) as u8
@@ -219,7 +216,7 @@ impl AudioPlaybackContext {
                                 }
                                 midly::MidiMessage::NoteOff { key, .. } => {
                                     let raw_key = key.as_int();
-                                    let final_key = if target_channel == 9 || target_channel == 25 {
+                                    let final_key = if is_drum_channel {
                                         raw_key
                                     } else {
                                         (raw_key as i8 + self.master_key).clamp(0, 127) as u8
