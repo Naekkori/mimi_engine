@@ -16,6 +16,8 @@ pub enum MidiEngineEvent {
     SmfKaraokeText {
         text: String,
     },
+    //시스템 리셋
+    MidiReset,
     //재생 진행 상태
     TickUpdate{
         current_tick: u64,
@@ -82,14 +84,16 @@ impl MimiSequencer {
                     // 연주이벤트
                     TrackEventKind::Midi { channel, message } => {
                         // 표준 MIDI 규격에 따라 9번 채널(10번)만 기본 드럼으로 처리
-                        let is_drum = u8::from(*channel) == 9;
+                        // GS/XG에서는 SysEx를 통해 다른 채널도 드럼으로 바뀔 수 있으나 기본은 9번
+                        let is_drum = u8::from(*channel) == 9; 
                         
-                        // CC나 Program Change는 Note보다 우선순위가 높아야 함
+                        // 우선순위 세분화: 컨트롤러(0) > 프로그램 체인지(1) > 연주(2)
                         match message {
-                            midly::MidiMessage::NoteOn { .. } | midly::MidiMessage::NoteOff { .. } => priority = 1,
+                            midly::MidiMessage::Controller { .. } => priority = 0,
+                            midly::MidiMessage::ProgramChange { .. } => priority = 1,
+                            midly::MidiMessage::NoteOn { .. } | midly::MidiMessage::NoteOff { .. } => priority = 2,
                             _ => priority = 0,
                         }
-
                         all_events.push(SequenceEvent {
                             absolute_tick: accum_tick,
                             priority,
@@ -110,6 +114,29 @@ impl MimiSequencer {
                             priority: 0,
                             inner: MidiEngineEvent::TempoChange { tempo: tempo.as_int() },
                         });
+                    }
+                    //SysEx를 통한 시스템 리셋 감지
+                    TrackEventKind::SysEx(data)=>{
+                        let is_reset = if data.len() >= 5 {
+                            //GM Reset
+                            (data[0] == 0x7E && data[2] == 0x09)||
+                                // GS Reset
+                                (data[0] == 0x41 && data[4] == 0x12 && data[5] == 0x40)||
+                                // GS Mode Set
+                                (data[0] == 0x41 && data[4] == 0x12 && data[5] == 0x00 && data[6] == 0x00 && data[7] == 0x7F)||
+                                // XG System On
+                                (data[0] == 0x43 && data[4] == 0x00 && data[5] == 0x00 && data[6] == 0x7E)
+                        } else { 
+                            false
+                        };
+                        
+                        if is_reset{
+                            all_events.push(SequenceEvent {
+                                absolute_tick: accum_tick,
+                                priority: 0,
+                                inner: MidiEngineEvent::MidiReset
+                            });
+                        }
                     }
                     _ => {}
                 }

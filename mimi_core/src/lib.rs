@@ -171,8 +171,26 @@ impl AudioPlaybackContext {
             // 3. 발생한 미디 이벤트들을 합성기(oxisynth)에 전달
             for event in ready_events {
                 match event.inner {
-                    MidiEngineEvent::TempoChange { tempo } => {
-                        // marching에서 이미 처리되지만, 필요시 동기화 로직 추가 가능
+                    MidiEngineEvent::MidiReset=>{
+                        // oxisynth에는 단일 reset() 메서드가 없으므로 채널별 초기화 수행
+                        for ch in 0..16 {
+                            // 1. 모든 소리 즉시 차단 (All Sound Off) 및 컨트롤러 리셋
+                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 120, value: 0 });
+                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 121, value: 0 });
+
+                            // 2. 표준 기본값 설정 (볼륨 100, 표현력 127, 팬 64)
+                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 7, value: 100 });
+                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 11, value: 127 });
+                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 10, value: 64 });
+                            
+                            // 3. 뱅크 및 프로그램 초기화 (기본 피아노 뱅크로 복구)
+                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 0, value: 0 });
+                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 32, value: 0 });
+                            let _ = self.synth.send_event(oxisynth::MidiEvent::ProgramChange { channel: ch, program_id: 0 });
+                            
+                            // 4. 피치 벤드 초기화 (중앙값)
+                            let _ = self.synth.send_event(oxisynth::MidiEvent::PitchBend { channel: ch, value: 8192 });
+                        }
                     }
                     MidiEngineEvent::MidiPlay {
                         channel,
@@ -345,6 +363,9 @@ pub fn spawn_mimi_engine(
     // 2. Oxisynth 합성기 설정 및 사운드폰트 주입
     let mut synth = Synth::default();
     synth.set_sample_rate(sample_rate as f32);
+
+    // Oxisynth/FluidSynth 설정: 뱅크 선택 모드를 GS/XG 호환 가능하도록 기본 설정 유지
+    // 필요 시 synth.set_bank_offset() 등을 고려할 수 있음
 
     let mut sf_file = std::fs::File::open(sf_path)?;
     let font = SoundFont::load(&mut sf_file)
