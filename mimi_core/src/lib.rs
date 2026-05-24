@@ -3,8 +3,7 @@
 mod sequencer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use oxisynth::MidiEvent::{NoteOff, NoteOn};
-use oxisynth::{SoundFont, Synth};
+use fluidlite::{IsSettings, IsSamples, Settings, Synth};
 pub use sequencer::{MidiEngineEvent, MimiSequencer};
 use std::sync::{Arc, Mutex};
 
@@ -129,10 +128,7 @@ impl AudioPlaybackContext {
     /// 현재 켜져 있는 모든 노트에 NoteOff를 주입하고 추적 배열을 비웁니다.
     fn all_notes_off(&mut self) {
         for (ch, note) in self.active_notes.drain(..) {
-            let _ = self.synth.send_event(NoteOff {
-                channel: ch,
-                key: note,
-            });
+            let _ = self.synth.note_off(ch as u32, note as u32);
         }
     }
 
@@ -168,37 +164,32 @@ impl AudioPlaybackContext {
             // 2. 1프레임 분량만큼 시퀀서 전진 및 발생한 이벤트 획득
             let ready_events = self.sequencer.marching(sec_per_frame, tempo_scale);
 
-            // 3. 발생한 미디 이벤트들을 합성기(oxisynth)에 전달
+            // 3. 발생한 미디 이벤트들을 합성기(fluidlite)에 전달
             for event in ready_events {
                 match event.inner {
-                    MidiEngineEvent::MidiReset=>{
-                        // oxisynth에는 단일 reset() 메서드가 없으므로 채널별 초기화 수행
-                        for ch in 0..16 {
-                            // 1. 모든 소리 즉시 차단 (All Sound Off) 및 컨트롤러 리셋
-                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 120, value: 0 });
-                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 121, value: 0 });
+                    MidiEngineEvent::MidiReset => {
+                        // fluidlite: system_reset()으로 모든 노트 오프 및 컨트롤러 리셋
+                        let _ = self.synth.system_reset();
 
-                            // 2. 표준 기본값 설정 (볼륨 100, 표현력 127, 팬 64)
-                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 7, value: 100 });
-                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 11, value: 127 });
-                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 10, value: 64 });
-                            
-                            // 3. 뱅크 및 프로그램 초기화 (기본 피아노 뱅크로 복구)
-                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 0, value: 0 });
-                            let _ = self.synth.send_event(oxisynth::MidiEvent::ControlChange { channel: ch, ctrl: 32, value: 0 });
-                            let _ = self.synth.send_event(oxisynth::MidiEvent::ProgramChange { channel: ch, program_id: 0 });
-                            
-                            // 4. 피치 벤드 초기화 (중앙값)
-                            let _ = self.synth.send_event(oxisynth::MidiEvent::PitchBend { channel: ch, value: 8192 });
+                        // 표준 기본값 재설정 (볼륨 100, 표현력 127, 팬 64)
+                        for ch in 0u32..16 {
+                            let _ = self.synth.cc(ch, 7, 100);   // 볼륨
+                            let _ = self.synth.cc(ch, 11, 127);  // 표현력(Expression)
+                            let _ = self.synth.cc(ch, 10, 64);   // 팬(Pan) 중앙
+                            // 뱅크 및 프로그램 초기화
+                            let _ = self.synth.cc(ch, 0, 0);     // Bank Select MSB
+                            let _ = self.synth.cc(ch, 32, 0);    // Bank Select LSB
+                            let _ = self.synth.program_change(ch, 0); // 기본 피아노
+                            // 피치 벤드 초기화 (중앙값 8192)
+                            let _ = self.synth.pitch_bend(ch, 8192);
                         }
                     }
                     MidiEngineEvent::MidiPlay {
                         channel,
                         kind,
-                        is_drum_channel
+                        is_drum_channel,
                     } => {
-                        let target_channel = channel; // 0~15
-                        let target_synth = &mut self.synth;
+                        let target_channel = channel as u32; // 0~15
 
                         if let midly::TrackEventKind::Midi { message, .. } = kind {
                             match message {
@@ -215,26 +206,26 @@ impl AudioPlaybackContext {
                                         };
 
                                         // 음걸림 추적 등록 및 노트 온
-                                        self.active_notes.push((target_channel as u8, final_key));
-                                        let _ = target_synth.send_event(NoteOn {
-                                            channel: target_channel,
-                                            key: final_key,
-                                            vel,
-                                        });
+                                        self.active_notes.push((channel, final_key));
+                                        let _ = self.synth.note_on(
+                                            target_channel,
+                                            final_key as u32,
+                                            vel as u32,
+                                        );
                                     } else {
                                         // Velocity가 0인 NoteOn은 NoteOff와 동일 처리
-                                        let final_key = if is_drum_channel {
+                                        let final_key: u8 = if is_drum_channel {
                                             raw_key
                                         } else {
                                             (raw_key as i8 + self.master_key).clamp(0, 127) as u8
                                         };
                                         self.active_notes.retain(|&(ch, n)| {
-                                            !(ch == target_channel as u8 && n == final_key)
+                                            !(ch == channel && n == final_key)
                                         });
-                                        let _ = target_synth.send_event(NoteOff {
-                                            channel: target_channel,
-                                            key: final_key,
-                                        });
+                                        let _ = self.synth.note_off(
+                                            target_channel,
+                                            final_key as u32,
+                                        );
                                     }
                                 }
                                 midly::MidiMessage::NoteOff { key, .. } => {
@@ -245,31 +236,32 @@ impl AudioPlaybackContext {
                                         (raw_key as i8 + self.master_key).clamp(0, 127) as u8
                                     };
                                     self.active_notes.retain(|&(ch, n)| {
-                                        !(ch == target_channel as u8 && n == final_key)
+                                        !(ch == channel && n == final_key)
                                     });
-                                    let _ = target_synth.send_event(NoteOff {
-                                        channel: target_channel,
-                                        key: final_key,
-                                    });
+                                    let _ = self.synth.note_off(
+                                        target_channel,
+                                        final_key as u32,
+                                    );
                                 }
                                 midly::MidiMessage::Controller { controller, value } => {
-                                    let _ = target_synth.send_event(oxisynth::MidiEvent::ControlChange {
-                                        channel: target_channel,
-                                        ctrl: controller.as_int(),
-                                        value: value.as_int(),
-                                    });
+                                    let _ = self.synth.cc(
+                                        target_channel,
+                                        controller.as_int() as u32,
+                                        value.as_int() as u32,
+                                    );
                                 }
                                 midly::MidiMessage::ProgramChange { program } => {
-                                    let _ = target_synth.send_event(oxisynth::MidiEvent::ProgramChange {
-                                        channel: target_channel,
-                                        program_id: program.as_int(),
-                                    });
+                                    let _ = self.synth.program_change(
+                                        target_channel,
+                                        u32::from(program.as_int()),
+                                    );
                                 }
                                 midly::MidiMessage::PitchBend { bend } => {
-                                    let _ = target_synth.send_event(oxisynth::MidiEvent::PitchBend {
-                                        channel: target_channel,
-                                        value: bend.as_int() as u16,
-                                    });
+                                    // fluidlite pitch_bend: 0~16383, 중앙 8192
+                                    // midly bend.as_int()는 -8192~8191 범위이므로 +8192 오프셋 적용
+                                    let raw = bend.as_int(); // i16, -8192~8191
+                                    let value = (raw as i32 + 8192).clamp(0, 16383) as u32;
+                                    let _ = self.synth.pitch_bend(target_channel, value);
                                 }
                                 _ => {}
                             }
@@ -280,9 +272,10 @@ impl AudioPlaybackContext {
                     }
                 }
             }
-            
-            // 4. 오디오 합성
-            self.synth.write(&mut output_buffer[sample_idx..sample_idx + 2]);
+
+            // 4. 오디오 합성 (fluidlite: write()는 IsSamples trait으로 인터리브 스테레오 출력)
+            let buf: &mut [f32] = &mut output_buffer[sample_idx..sample_idx + 2];
+            let _ = buf.write_samples(&self.synth);
 
             sample_idx += 2;
 
@@ -351,30 +344,35 @@ pub fn spawn_mimi_engine(
         .ok_or_else(|| anyhow::anyhow!("오디오 출력 장치를 찾을 수 없습니다."))?;
     let config = device.default_output_config()?;
     let sample_rate = config.sample_rate() as f64;
+    let channels = config.channels();
 
     // 스테레오 채널 설정 확인
     let cpal_config: cpal::StreamConfig = config.into();
-    if cpal_config.channels != 2 {
+    if channels != 2u16 {
         return Err(anyhow::anyhow!(
             "MIMI 엔진은 현재 스테레오(2채널) 출력 장치만 지원합니다."
         ));
     }
 
-    // 2. Oxisynth 합성기 설정 및 사운드폰트 주입
-    let mut synth = Synth::default();
-    synth.set_sample_rate(sample_rate as f32);
+    // 2. fluidlite 합성기 설정
+    let settings = Settings::new()
+        .map_err(|e| anyhow::anyhow!("FluidLite Settings 생성 실패: {:?}", e))?;
 
-    // Oxisynth/FluidSynth 설정: 뱅크 선택 모드를 GS/XG 호환 가능하도록 기본 설정 유지
-    // 필요 시 synth.set_bank_offset() 등을 고려할 수 있음
+    // 샘플레이트를 Settings의 num 설정으로 사전 주입
+    if let Some(sr_setting) = settings.num("synth.sample-rate") {
+        sr_setting.set(sample_rate as f64);
+    }
 
-    let mut sf_file = std::fs::File::open(sf_path)?;
-    let font = SoundFont::load(&mut sf_file)
+    let synth = Synth::new(settings)
+        .map_err(|e| anyhow::anyhow!("FluidLite Synth 생성 실패: {:?}", e))?;
+
+    // 사운드폰트 로드 (fluidlite는 AsRef<Path> 경로 문자열을 직접 받음)
+    synth.sfload(sf_path, true)
         .map_err(|e| anyhow::anyhow!("사운드폰트 로드 실패: {:?}", e))?;
-    synth.add_font(font, true);
 
     // 3. 시퀀서 준비
     let sequencer = MimiSequencer::from_byte(&midi_bytes)?;
-    
+
     // 전체 틱 정보를 상태에 미리 반영
     player_status.lock().unwrap().total_tick = sequencer.total_ticks as u64;
 
