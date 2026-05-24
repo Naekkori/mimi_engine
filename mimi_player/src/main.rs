@@ -4,14 +4,25 @@ use crossterm::event;
 use mimi_core::{MimiCommand, MimiEngineHandle, PlayerState};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::{DefaultTerminal, Frame};
 use std::path::PathBuf;
+use std::sync::mpsc;
+
+// 앱의 현재 화면 상태 정의
+enum AppState {
+    Browsing,
+    Loading(f64), // 로딩 퍼센트 (0.0 ~ 1.0)
+    Playing,
+}
 
 struct App {
+    state: AppState,
+
     // 탐색기 관련
     file_list: Vec<PathBuf>,
     selected_index: usize,
+    list_state: ListState,
     
     // 재생 관련
     song_name: String,
@@ -19,18 +30,24 @@ struct App {
     song_time: String,
     engine: Option<MimiEngineHandle>,
     _stream: Option<cpal::Stream>, // 오디오 스트림 수명 유지를 위한 필드
+
+    // 비동기 로딩용 채널
+    loading_rx: Option<mpsc::Receiver<Result<(MimiEngineHandle, cpal::Stream), String>>>,
 }
 
 impl App {
     fn new() -> Self {
         Self {
+            state: AppState::Browsing,
             song_name: String::new(),
             player_state: PlayerState::Stopped,
             song_time: String::new(),
             file_list: Vec::new(),
             selected_index: 0,
+            list_state: ListState::default(),
             engine: None,
             _stream: None,
+            loading_rx: None,
         }
     }
 }
@@ -48,13 +65,22 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
     let assets_path = "assets";
     let sf_path = "assets/soundfont.sf2";
 
-    // assets 폴더에서 미디 파일 목록 읽기
-    let entries = std::fs::read_dir(assets_path).map_err(|e| eyre!("Failed to read assets dir: {:?}", e))?;
-    for entry in entries {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
+    // assets 폴더 및 하위 디렉토리를 재귀적으로 탐색하여 미디 파일 스캔
+    let mut stack = vec![PathBuf::from(assets_path)];
+
+    // 루트 assets 디렉토리 존재 확인
+    if !std::path::Path::new(assets_path).exists() {
+        return Err(eyre!("Assets 디렉토리를 찾을 수 없음: {}", assets_path));
+    }
+
+    while let Some(current_dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(current_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // 디렉토리인 경우 스택에 추가하여 내부 탐색 수행
+                    stack.push(path);
+                } else if let Some(ext) = path.extension() {
                     let ext_str = ext.to_string_lossy().to_lowercase();
                     if ext_str == "mid" || ext_str == "midi" {
                         app.file_list.push(path);
@@ -66,9 +92,37 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
     
     // 파일명 기준 정렬
     app.file_list.sort();
+    if !app.file_list.is_empty() {
+        app.list_state.select(Some(0));
+    }
 
+    let mut needs_redraw = true;
     'main_loop: loop {
-        let mut needs_redraw = false;
+        if needs_redraw {
+            terminal.draw(|f| render(f, &mut app))?;
+            needs_redraw = false;
+        }
+
+        // 로딩 중일 때 비동기 결과 확인
+        if let AppState::Loading(ref mut progress) = app.state {
+            // 로딩 바 애니메이션 효과 (가짜 진행도)
+            *progress = (*progress + 0.05).min(0.95);
+            needs_redraw = true;
+
+            if let Some(rx) = &app.loading_rx {
+                if let Ok(result) = rx.try_recv() {
+                    match result {
+                        Ok((handle, stream)) => {
+                            app.engine = Some(handle);
+                            app._stream = Some(stream);
+                            app.state = AppState::Playing;
+                        }
+                        Err(_) => app.state = AppState::Browsing,
+                    }
+                    app.loading_rx = None;
+                }
+            }
+        }
 
         // 입력을 대기 (50ms = 약 20fps, CPU 부하 감소)
         if event::poll(std::time::Duration::from_millis(50))? {
@@ -81,15 +135,22 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
 
                 match key.code {
                     // 위/아래 이동
+                    event::KeyCode::Up | event::KeyCode::Down if matches!(app.state, AppState::Loading(_)) => {
+                        // 로딩 중에는 리스트 이동 금지
+                        continue;
+                    }
+
                     event::KeyCode::Up => {
                         if app.selected_index > 0 {
                             app.selected_index -= 1;
+                            app.list_state.select(Some(app.selected_index));
                             needs_redraw = true;
                         }
                     }
                     event::KeyCode::Down => {
                         if !app.file_list.is_empty() && app.selected_index < app.file_list.len() - 1 {
                             app.selected_index += 1;
+                            app.list_state.select(Some(app.selected_index));
                             needs_redraw = true;
                         }
                     }
@@ -100,16 +161,30 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             app.engine = None;
                             app._stream = None;
                             
-                            let midi_bytes = std::fs::read(path).map_err(|e| eyre!("Can't read Midi: {:?}", e))?;
-                            let (handle, stream) = mimi_core::spawn_mimi_engine(sf_path, midi_bytes)
-                                .map_err(|e| eyre!("Failed to spawn engine: {:?}", e))?;
-                            
-                            app.song_name = path.file_name().unwrap().to_string_lossy().to_string();
-                            handle.send_command(MimiCommand::Play).expect("Failed to play");
-                            app.player_state = PlayerState::Playing;
-                            app.engine = Some(handle);
-                            app._stream = Some(stream);
+                            let (tx, rx) = mpsc::channel();
+                            app.loading_rx = Some(rx);
+                            app.state = AppState::Loading(0.0);
                             needs_redraw = true;
+
+                            let path_clone = path.clone();
+                            let sf_path_str = sf_path.to_string();
+
+                            // 엔진 생성을 별도 스레드에서 수행
+                            std::thread::spawn(move || {
+                                let res = (|| -> Result<(MimiEngineHandle, cpal::Stream), String> {
+                                    let midi_bytes = std::fs::read(&path_clone)
+                                        .map_err(|e| format!("파일 읽기 실패: {:?}", e))?;
+                                    let (handle, stream) = mimi_core::spawn_mimi_engine(&sf_path_str, midi_bytes)
+                                        .map_err(|e| format!("엔진 생성 실패: {:?}", e))?;
+                                    
+                                    // 재생 시작 명령
+                                    handle.send_command(MimiCommand::Play).ok();
+                                    Ok((handle, stream))
+                                })();
+                                let _ = tx.send(res);
+                            });
+
+                            app.song_name = path.file_name().unwrap().to_string_lossy().to_string();
                         }
                     }
                     // 재생 제어
@@ -147,6 +222,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         app._stream = None;
                         app.song_name = "Ready.".to_string();
                         app.player_state = PlayerState::Stopped;
+                        app.state = AppState::Browsing;
                         app.song_time = String::new();
                         needs_redraw = true;
                     }
@@ -193,14 +269,11 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
             }
         }
 
-        if needs_redraw {
-            terminal.draw(|f| render(f, &app))?;
-        }
     }
     Ok(())
 }
 
-fn render(frame: &mut Frame, app: &App) {
+fn render(frame: &mut Frame, app: &mut App) {
     let version = env!("CARGO_PKG_VERSION");
     let block = Block::bordered()
         .title_top(Line::from(format!("MIMI PLAYER - {}", version)).centered())
@@ -210,25 +283,31 @@ fn render(frame: &mut Frame, app: &App) {
 
     let area = frame.area();
 
-    if app.engine.is_none() {
-        // 탐색기 모드
-        let items: Vec<ListItem> = app.file_list.iter().enumerate().map(|(i, path)| {
+    match app.state {
+        AppState::Browsing => {
+            // 탐색기 모드
+        let items: Vec<ListItem> = app.file_list.iter().map(|path| {
             let name = path.file_name().unwrap().to_string_lossy();
-            let style = if i == app.selected_index {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(format!("{} {}", if i == app.selected_index { ">" } else { " " }, name)).style(style)
+            ListItem::new(name.to_string())
         }).collect();
 
         let list = List::new(items)
             .block(block.title(" Select MIDI File ".bold()))
-            .highlight_style(Style::default().bg(Color::DarkGray));
+            .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD).bg(Color::DarkGray))
+            .highlight_symbol("> ");
             
-        frame.render_widget(list, area);
-    } else {
-        // 재생 모드
+        frame.render_stateful_widget(list, area, &mut app.list_state);
+
+        // 스크롤바 렌더링
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓")),
+            area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 }),
+            &mut ScrollbarState::new(app.file_list.len()).position(app.selected_index),
+        );
+        }
+        AppState::Playing => {
         let text = vec![
             Line::from(vec![
                 Span::raw("Now Playing: "),
@@ -242,4 +321,28 @@ fn render(frame: &mut Frame, app: &App) {
         let paragraph = Paragraph::new(text).block(block.title(" Playback Info ".bold()));
         frame.render_widget(paragraph, area);
     }
+        AppState::Loading(progress) => {
+            // 로딩 화면 및 로딩 바
+            let center_area = centered_rect(60, 20, area);
+            let loader = Gauge::default()
+                .block(Block::bordered().title(" Loading Engine... ".bold()))
+                .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
+                .ratio(progress);
+            
+            frame.render_widget(loader, center_area);
+        }
+    }
+}
+
+// 로딩 바 배치를 위한 중앙 영역 계산 함수
+fn centered_rect(percent_x: u16, percent_y: u16, r: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage((100 - percent_y) / 2), Constraint::Percentage(percent_y), Constraint::Percentage((100 - percent_y) / 2)])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage((100 - percent_x) / 2), Constraint::Percentage(percent_x), Constraint::Percentage((100 - percent_x) / 2)])
+        .split(popup_layout[1])[1]
 }
