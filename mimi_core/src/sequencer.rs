@@ -4,6 +4,7 @@ use midly::{Smf, TrackEventKind};
 pub enum MidiEngineEvent {
     // 단일 포트(16채널) 기준 미디 메세지 종류
     MidiPlay {
+        port: u8,
         channel: u8,
         is_drum_channel: bool, // 드럼 채널 여부 추가 (10번 또는 11번 채널)
         kind: TrackEventKind<'static>,
@@ -58,13 +59,15 @@ impl MimiSequencer {
 
             for event in track.iter() {
                 accum_tick += event.delta.as_int();
-                let mut priority = 1; // 기본은 연주(Note) 우선순위
-
+                let mut priority = 0u32; // 기본은 연주(Note) 우선순위
+                let mut current_port = 0u8;
                 let kind = event.kind.to_static();
 
                 match &kind {
-                    // 포트 메타 이벤트는 무시 (단일 포트로 압축)
-                    TrackEventKind::Meta(midly::MetaMessage::MidiPort(_)) => {}
+                    // 포트
+                    TrackEventKind::Meta(midly::MetaMessage::MidiPort(port)) => {
+                        current_port = port.as_int();
+                    }
                     // 내장가사(Lyric) 및 일반 텍스트(Text) 이벤트 모두 처리
                     TrackEventKind::Meta(midly::MetaMessage::Lyric(bytes)) | 
                     TrackEventKind::Meta(midly::MetaMessage::Text(bytes)) => {
@@ -76,7 +79,7 @@ impl MimiSequencer {
                             priority = 0; 
                             all_events.push(SequenceEvent {
                                 absolute_tick: accum_tick,
-                                priority,
+                                priority: priority.try_into().unwrap(),
                                 inner: MidiEngineEvent::SmfKaraokeText { text },
                             });
                         }
@@ -96,8 +99,9 @@ impl MimiSequencer {
                         }
                         all_events.push(SequenceEvent {
                             absolute_tick: accum_tick,
-                            priority,
+                            priority: priority.try_into().unwrap(),
                             inner: MidiEngineEvent::MidiPlay {
+                                port:current_port,
                                 channel: u8::from(*channel),
                                 is_drum_channel: is_drum, // 드럼 채널 여부 설정
                                 kind: TrackEventKind::Midi {
