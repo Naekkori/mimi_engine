@@ -1,20 +1,21 @@
+// mimi_core/src/lib.rs
+
 mod sequencer;
-
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
-use crossbeam_channel::{unbounded, Sender, Receiver};
-use oxisynth::{SoundFont, Synth};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use crossbeam_channel::{unbounded, Receiver, Sender};
+use oxisynth::MidiEvent::{NoteOff, NoteOn};
+use oxisynth::{SoundFont, Synth};
+pub use sequencer::{MidiEngineEvent, MimiSequencer};
+use std::sync::{Arc, Mutex};
 
-/// 외부(UI 등)에서 오디오 스레드로 보낼 제어 명령
+/// 외부(UI 등)에서 오디오 엔진으로 보낼 제어 명령
 pub enum MimiCommand {
     Play,
     Pause,
     Stop,
-    SetKey(i8),       // 조옮김 (예: -1, +2)
-    SetTempo(f32),    // 템포 비율 (예: 1.0, 1.2)
-    Seek(u32),        // 특정 절대 틱(Tick) 위치로 점프
+    SetKey(i8),    // 조옮김 오프셋 (-6 ~ +6 등)
+    SetTempo(f32), // 템포 비율 (1.0 = 정속, 1.2 = 배속)
+    Seek(u32),     // 특정 절대 틱(Tick) 위치로 점프
 }
 
 /// 오디오 엔진의 현재 내부 상태
@@ -25,22 +26,18 @@ pub enum PlayerState {
     Paused,
 }
 
-/// 재생 추적을 위한 미디 이벤트 구조체 (델타 틱 대신 절대 틱 사용)
-pub struct AbsoluteMidiEvent {
-    pub absolute_tick: u32,
-    pub channel: u8,
-    pub message: midly::TrackEventKind<'static>,
-}
-
-/// mimi_core 엔진을 제어하기 위한 외부 인터페이스 핸들
+/// 외부 제어용 인터페이스 핸들
 pub struct MimiEngineHandle {
     command_tx: Sender<MimiCommand>,
     state: Arc<Mutex<PlayerState>>,
+    pub ui_rx: Receiver<MidiEngineEvent>, // 가사, 리듬 변환 플래그 등을 UI(Bevy) 쪽에서 받아갈 수 있는 채널
 }
 
 impl MimiEngineHandle {
     pub fn send_command(&self, cmd: MimiCommand) -> Result<(), anyhow::Error> {
-        self.command_tx.send(cmd).map_err(|e| anyhow::anyhow!("명령 전송 실패: {:?}", e))
+        self.command_tx
+            .send(cmd)
+            .map_err(|e| anyhow::anyhow!("명령 전송 실패: {:?}", e))
     }
 
     pub fn get_state(&self) -> PlayerState {
@@ -48,90 +45,276 @@ impl MimiEngineHandle {
     }
 }
 
-/// MIMI 엔진 구동 및 오디오 스레드 생성 함수
-pub fn spawn_mimi_engine(sf_path: &str) -> Result<MimiEngineHandle, anyhow::Error> {
-    let (command_tx, command_rx) = unbounded::<MimiCommand>();
-    let player_state = Arc::new(Mutex::new(PlayerState::Stopped));
-    let state_clone = Arc::clone(&player_state);
+/// 오디오 콜백 스레드와 통신하며 시퀀싱 및 합성을 전담할 오디오 컨텍스트
+struct AudioPlaybackContext {
+    sequencer: MimiSequencer,
+    synth: Synth,
+    command_rx: Receiver<MimiCommand>,
+    ui_tx: Sender<MidiEngineEvent>,
+    state: Arc<Mutex<PlayerState>>,
 
-    // 1. CPAL 오디오 출력 장치 및 스트림 설정
-    let host = cpal::default_host();
-    let device = host.default_output_device().ok_or_else(|| anyhow::anyhow!("오디오 출력 장치를 찾을 수 없습니다."))?;
-    let config = device.default_output_config()?;
-    let sample_rate = config.sample_rate();
+    // 내부 상태 트래킹 변수들
+    current_state: PlayerState,
+    master_key: i8,
+    tempo_scale: f32,
+    sample_rate: f64,
 
-    // 2. Oxisynth 합성기 초기화 및 사운드폰트 로드
-    let mut synth = Synth::default();
-    let mut sf_file = std::fs::File::open(sf_path)?;
-    let font = SoundFont::load(&mut sf_file).map_err(|e| anyhow::anyhow!("사운드폰트 로드 실패: {:?}", e))?;
-    synth.add_font(font, true);
+    // 음 걸림(Note stuck) 방지용 노트 온 추적 배열 (channel, note)
+    active_notes: Vec<(u8, u8)>,
+}
 
-    // 3. 백엔드 전용 내부 타이머 및 재생 상태 변수들
-    let mut current_state = PlayerState::Stopped;
-    let mut master_key: i8 = 0;
-    let mut tempo_scale: f32 = 1.0;
-    let mut current_tick: u32 = 0;
+impl AudioPlaybackContext {
+    /// 실시간으로 외부 명령(`MimiCommand`)을 체크하고 반영합니다.
+    fn process_commands(&mut self) {
+        while let Ok(cmd) = self.command_rx.try_recv() {
+            match cmd {
+                MimiCommand::Play => {
+                    self.current_state = PlayerState::Playing;
+                    *self.state.lock().unwrap() = PlayerState::Playing;
+                }
+                MimiCommand::Pause => {
+                    self.current_state = PlayerState::Paused;
+                    *self.state.lock().unwrap() = PlayerState::Paused;
+                    self.all_notes_off();
+                }
+                MimiCommand::Stop => {
+                    self.current_state = PlayerState::Stopped;
+                    *self.state.lock().unwrap() = PlayerState::Stopped;
+                    self.all_notes_off();
+                    self.sequencer.reset();
+                }
+                MimiCommand::SetKey(key) => {
+                    // 키 변경 시 음걸림 예방을 위해 기존 소리 끄기
+                    self.all_notes_off();
+                    self.master_key = key;
+                }
+                MimiCommand::SetTempo(tempo) => {
+                    self.tempo_scale = tempo;
+                }
+                MimiCommand::Seek(tick) => {
+                    self.all_notes_off();
+                    self.sequencer.current_tick = tick as f64;
+                    // 필요한 경우 이벤트 인덱스 역정렬/재탐색 로직 추가 가능
+                }
+            }
+        }
+    }
 
-    // 음 걸림(Note-stuck) 방지를 위해 현재 켜진 노트를 추적하는 배열
-    let mut active_notes: Vec<(u8, u8)> = Vec::new(); // (channel, note)
+    /// 현재 켜져 있는 모든 노트에 NoteOff를 주입하고 추적 배열을 비웁니다.
+    fn all_notes_off(&mut self) {
+        for (ch, note) in self.active_notes.drain(..) {
+            let _ = self.synth.send_event(NoteOff {
+                channel: ch,
+                key: note,
+            });
+        }
+    }
 
-    // 4. 독립적인 전용 오디오 처리 스레드 생성
-    let _audio_thread = thread::spawn(move || {
-        // 실제 운영 환경에서는 오디오 스트림 내부 콜백이나 
-        // 하이 레졸루션 타이머 루프(1ms)로 동작하게 됩니다.
-        loop {
-            // 외부 명령 체크 (Non-blocking)
-            while let Ok(cmd) = command_rx.try_recv() {
-                match cmd {
-                    MimiCommand::Play => {
-                        current_state = PlayerState::Playing;
-                        *state_clone.lock().unwrap() = PlayerState::Playing;
-                    }
-                    MimiCommand::Pause => {
-                        current_state = PlayerState::Paused;
-                        *state_clone.lock().unwrap() = PlayerState::Paused;
-                    }
-                    MimiCommand::Stop => {
-                        current_state = PlayerState::Stopped;
-                        *state_clone.lock().unwrap() = PlayerState::Stopped;
-                        current_tick = 0;
-                        // 음걸림 방지: 모든 활성화된 노트 강제 Off
-                        for (ch, note) in active_notes.drain(..) {
-                            // synth.note_off(ch, note);
+    /// 오디오 하드웨어가 요청한 샘플 개수만큼 미디 이벤트를 처리하고 오디오를 합성합니다.
+    fn fill_buffer(&mut self, output_buffer: &mut [f32]) {
+        // 1. 명령 처리
+        self.process_commands();
+
+        // 스테레오(Left, Right) 채널 처리를 위해 2개 샘플씩 묶어서 루프 돌림
+        let num_frames = output_buffer.len() / 2;
+
+        // 1프레임(L/R 한 쌍)당 경과하는 시간(초) 계산
+        let sec_per_frame = 1.0 / self.sample_rate;
+
+        if self.current_state != PlayerState::Playing {
+            // 정지 또는 일시정지 상태면 무음 처리
+            for sample in output_buffer.iter_mut() {
+                *sample = 0.0;
+            }
+            return;
+        }
+
+        // 프레임 단위로 돌면서 정밀 시퀀싱 진행
+        let mut sample_idx = 0;
+        for _ in 0..num_frames {
+            // 2. 1프레임 분량만큼 시퀀서 전진 및 발생한 이벤트 획득
+            let ready_events = self.sequencer.marching(sec_per_frame, self.tempo_scale);
+
+            // 3. 발생한 미디 이벤트들을 합성기(oxisynth)에 전달
+            for event in ready_events {
+                match event.inner {
+                    MidiEngineEvent::MidiPlay {
+                        port,
+                        channel,
+                        kind,
+                    } => {
+                        // 듀얼 포트(32채널) 라우팅: Port B(1) 이면 채널 오프셋 16 더함
+                        let target_channel = if port == 1 { channel + 16 } else { channel };
+
+                        if let midly::TrackEventKind::Midi { message, .. } = kind {
+                            match message {
+                                midly::MidiMessage::NoteOn { key, vel } => {
+                                    let raw_key = key.as_int();
+                                    let vel = vel.as_int();
+
+                                    if vel > 0 {
+                                        // 조옮김 적용 (표준 9번, 25번 드럼 채널은 조옮김 제외)
+                                        let final_key = if target_channel == 9
+                                            || target_channel == 25
+                                        {
+                                            raw_key
+                                        } else {
+                                            (raw_key as i8 + self.master_key).clamp(0, 127) as u8
+                                        };
+
+                                        // 음걸림 추적 등록 및 노트 온
+                                        self.active_notes.push((target_channel, final_key));
+                                        let _ = self.synth.send_event(NoteOn {
+                                            channel: target_channel,
+                                            key: final_key,
+                                            vel,
+                                        });
+                                    } else {
+                                        // Velocity가 0인 NoteOn은 NoteOff와 동일 처리
+                                        let final_key = if target_channel == 9
+                                            || target_channel == 25
+                                        {
+                                            raw_key
+                                        } else {
+                                            (raw_key as i8 + self.master_key).clamp(0, 127) as u8
+                                        };
+                                        self.active_notes.retain(|&(ch, n)| {
+                                            !(ch == target_channel && n == final_key)
+                                        });
+                                        let _ = self.synth.send_event(NoteOff {
+                                            channel: target_channel,
+                                            key: final_key,
+                                        });
+                                    }
+                                }
+                                midly::MidiMessage::NoteOff { key, .. } => {
+                                    let raw_key = key.as_int();
+                                    let final_key = if target_channel == 9 || target_channel == 25 {
+                                        raw_key
+                                    } else {
+                                        (raw_key as i8 + self.master_key).clamp(0, 127) as u8
+                                    };
+                                    self.active_notes.retain(|&(ch, n)| {
+                                        !(ch == target_channel && n == final_key)
+                                    });
+                                    let _ = self.synth.send_event(NoteOff {
+                                        channel: target_channel,
+                                        key: final_key,
+                                    });
+                                }
+                                midly::MidiMessage::Controller { controller, value } => {
+                                    let _ =
+                                        self.synth.send_event(oxisynth::MidiEvent::ControlChange {
+                                            channel: target_channel,   // `channel` 필드는 그대로 유지
+                                            ctrl: controller.as_int(), // `controller` 대신 `ctrl`
+                                            value: value.as_int(),
+                                        });
+                                }
+                                midly::MidiMessage::ProgramChange { program } => {
+                                    let _ =
+                                        self.synth.send_event(oxisynth::MidiEvent::ProgramChange {
+                                            channel: target_channel,      // `channel` 필드는 그대로 유지
+                                            program_id: program.as_int(), // `program` 대신 `program_id`
+                                        });
+                                }
+                                midly::MidiMessage::PitchBend { bend } => {
+                                    let _ = self.synth.send_event(oxisynth::MidiEvent::PitchBend {
+                                        channel: target_channel,
+                                        value: bend.as_int() as u16, // U14 타입 변환
+                                    });
+                                }
+                                _ => {}
+                            }
                         }
                     }
-                    MimiCommand::SetKey(key) => {
-                        master_key = key;
-                        // 실시간 키 변경 시에도 드럼 채널을 제외한 노트 오프 트래킹이 개입되어야 함
-                    }
-                    MimiCommand::SetTempo(tempo) => {
-                        tempo_scale = tempo;
-                    }
-                    MimiCommand::Seek(tick) => {
-                        current_tick = tick;
-                        // 구동 중인 모든 노트 끄기 처리 후 점프
+                    // 가사 텍스트나 리듬 변경 제어 플래그는 UI 비동기 채널로 우회
+                    other_event => {
+                        let _ = self.ui_tx.send(other_event);
                     }
                 }
             }
 
-            if current_state == PlayerState::Playing {
-                // [정밀 타이밍 렌더링 영역]
-                // 1. 정해진 템포와 틱 계산에 따라 미디 이벤트 맵에서 현재 `current_tick`에 해당하는 메시지 추출
-                // 2. 추출된 미디 메시지 분석
-                //    - Note On 발생 시: 드럼 채널(9번, 10번 소스 등)이 아니면 `note + master_key` 연산 후 synth 전달
-                //    - 가사 및 제어 데이터(+d;+ 등)는 파싱하여 렌더러로 보낼 Bridge 채널로 Push
-                // 3. 오디오 버퍼 생성 및 장치로 전달
+            // 4. 해당 프레임의 오디오 샘플 1쌍(L/R)을 슬라이스에 직접 합성
+            self.synth
+                .write(&mut output_buffer[sample_idx..sample_idx + 2]);
 
-                current_tick += 1; // 가상 진행
-            }
-
-            // 고정밀 1ms 주기를 시뮬레이션하기 위한 대기 (실제 하드웨어 타겟 시 cpal 스트림 콜백 내부에서 제어 권장)
-            thread::sleep(Duration::from_millis(1));
+            sample_idx += 2;
         }
-    });
+    }
+}
 
-    Ok(MimiEngineHandle {
+/// MIMI 엔진 구동 및 CPAL 하드웨어 오디오 스트림 활성화 함수
+pub fn spawn_mimi_engine(
+    sf_path: &str,
+    midi_bytes: Vec<u8>,
+) -> Result<(MimiEngineHandle, cpal::Stream), anyhow::Error> {
+    let (command_tx, command_rx) = unbounded::<MimiCommand>();
+    let (ui_tx, ui_rx) = unbounded::<MidiEngineEvent>();
+
+    let player_state = Arc::new(Mutex::new(PlayerState::Stopped));
+    let state_clone = Arc::clone(&player_state);
+
+    // 1. CPAL을 통한 오디오 하드웨어 장치 열기
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| anyhow::anyhow!("오디오 출력 장치를 찾을 수 없습니다."))?;
+    let config = device.default_output_config()?;
+    let sample_rate = config.sample_rate() as f64;
+
+    // 스테레오 채널 설정 확인
+    let cpal_config: cpal::StreamConfig = config.into();
+    if cpal_config.channels != 2 {
+        return Err(anyhow::anyhow!(
+            "MIMI 엔진은 현재 스테레오(2채널) 출력 장치만 지원합니다."
+        ));
+    }
+
+    // 2. Oxisynth 합성기 설정 및 사운드폰트 주입
+    let mut synth = Synth::default();
+    synth.set_sample_rate(sample_rate as f32);
+    let mut sf_file = std::fs::File::open(sf_path)?;
+    let font = SoundFont::load(&mut sf_file)
+        .map_err(|e| anyhow::anyhow!("사운드폰트 로드 실패: {:?}", e))?;
+    synth.add_font(font, true);
+
+    // 3. 시퀀서 준비
+    let sequencer = MimiSequencer::from_byte(&midi_bytes)?;
+
+    // 4. 오디오 콜백 스레드로 넘겨줄 컨텍스트 객체 생성
+    let mut playback_context = AudioPlaybackContext {
+        sequencer,
+        synth,
+        command_rx,
+        ui_tx,
+        state: state_clone,
+        current_state: PlayerState::Stopped,
+        master_key: 0,
+        tempo_scale: 1.0,
+        sample_rate,
+        active_notes: Vec::new(),
+    };
+
+    // 5. CPAL 오디오 스트림 생성 (독립 하드웨어 스레드에서 무한 반복 호출됨)
+    let error_callback = |err| eprintln!("오디오 스트림 에러 발생: {}", err);
+    let stream = device.build_output_stream(
+        &cpal_config,
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            playback_context.fill_buffer(data);
+        },
+        error_callback,
+        None,
+    )?;
+
+    // 스트림 즉시 가동
+    stream.play()?;
+
+    let handle = MimiEngineHandle {
         command_tx,
         state: player_state,
-    })
+        ui_rx,
+    };
+
+    // cpal::Stream의 수명이 다하면 소리가 끊기므로 Handle과 함께 반환하여 상위 메인에서 관리하도록 함
+    Ok((handle, stream))
 }

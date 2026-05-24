@@ -337,6 +337,10 @@ dependencies = [
 [[package]]
 name = "mimi_sandbox"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mimi_core",
+]
 
 [[package]]
 name = "ndk"
