@@ -147,7 +147,7 @@ impl MimiSequencer {
     //처음으로 되돌리기
     pub fn reset(&mut self) {
         self.current_event_index = 0;
-        self.current_tick += 0.0;
+        self.current_tick = 0.0; // Changed from += 0.0 to = 0.0
         self.microseconds_per_tick = 500_000.0 / self.ppq as f64;
     }
 }

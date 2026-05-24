@@ -1,31 +1,40 @@
-// mimi_sandbox/src/main.rs (또는 mimi_core의 예제 파일)
-
+use mimi_core::{spawn_mimi_engine, MimiCommand};
 use std::thread;
 use std::time::Duration;
-use mimi_core::{spawn_mimi_engine, MimiCommand, PlayerState};
+use anyhow::Error;
 
-fn main() -> Result<(), anyhow::Error> {
+#[test]
+fn engine_test() -> Result<(), anyhow::Error> {
     println!("==================================================");
     println!("      MIMI 노래방 최적화 미디 엔진 통합 테스트     ");
     println!("==================================================");
 
     // 1. 테스트용 에셋 경로 설정 및 미디 바이너리 로드
-    let sf_path = "assets/soundfont.sf2";
-    let midi_path = "assets/test.mid";
+    let sf_path = "../assets/soundfont.sf2";
+    let midi_path = "../assets/test.mid";
 
     println!("[로딩] 미디 파일을 읽는 중: {}", midi_path);
-    let midi_bytes = std::fs::read(midi_path)
-        .map_err(|e| anyhow::anyhow!("테스트 미디 파일을 찾을 수 없습니다. (assets/test.mid 확인 필요): {:?}", e))?;
+    let midi_bytes = std::fs::read(midi_path).map_err(|e| {
+        anyhow::anyhow!(
+            "테스트 미디 파일을 찾을 수 없습니다. (assets/test.mid 확인 필요): {:?}",
+            e
+        )
+    })?;
 
     println!("[로딩] 사운드폰트 파일 확인 중: {}", sf_path);
     if !std::path::Path::new(sf_path).exists() {
-        return Err(anyhow::anyhow!("테스트 사운드폰트 파일이 없습니다. (assets/soundfont.sf2 확인 필요)"));
+        return Err(anyhow::anyhow!(
+            "테스트 사운드폰트 파일이 없습니다. (assets/soundfont.sf2 확인 필요)"
+        ));
     }
 
     // 2. MIMI 오디오 엔진 가동 (CPAL 하드웨어 스트림 및 오디오 스레드 자동 시작)
     println!("[엔진] MIMI 오디오 엔진 및 CPAL 스트림 초기화 중...");
     let (engine_handle, _stream) = spawn_mimi_engine(sf_path, midi_bytes)?;
-    println!("[엔진] 초기화 성공. 현재 상태: {:?}", engine_handle.get_state());
+    println!(
+        "[엔진] 초기화 성공. 현재 상태: {:?}",
+        engine_handle.get_state()
+    );
 
     // 3. UI(가사/이벤트) 모니터링 전용 백그라운드 스레드 분리
     // Bevy 엔진이 메인 스레드에서 주기적으로 수신하는 상황을 시뮬레이션합니다.
@@ -62,7 +71,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     thread::sleep(Duration::from_secs(4));
     engine_handle.send_command(MimiCommand::SetKey(0))?;
-    
+
     println!("\n---> [시나리오 3] 동적 템포 변경 테스트: 1.3배속 (Fast Tempo)");
     // 연주 속도가 빨라지면서 오디오 싱크가 깨지지 않는지 확인
     engine_handle.send_command(MimiCommand::SetTempo(1.3))?;
@@ -90,6 +99,6 @@ fn main() -> Result<(), anyhow::Error> {
     println!("\n==================================================");
     println!("      MIMI 미디 엔진 기본 기능 테스트 완료!      ");
     println!("==================================================");
-
+    
     Ok(())
 }

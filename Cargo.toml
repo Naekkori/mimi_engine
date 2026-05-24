@@ -1,6 +1,6 @@
 [workspace]
 members = [
     "mimi_core",
-    "mimi_sandbox"
+    "mimi_player"
 ]
 resolver = "2"
