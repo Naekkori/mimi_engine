@@ -45,9 +45,6 @@ fn engine_test() -> Result<(), anyhow::Error> {
                 mimi_core::MidiEngineEvent::SmfKaraokeText { text } => {
                     println!("🎵 [UI 수신 - 가사]: {}", text);
                 }
-                mimi_core::MidiEngineEvent::RhythmConversion { is_enable } => {
-                    println!("🥁 [UI 수신 - 리듬변환 플래그]: {}", is_enable);
-                }
                 _ => {}
             }
         }
