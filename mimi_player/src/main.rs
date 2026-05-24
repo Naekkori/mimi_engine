@@ -165,6 +165,10 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     }
                     // 선택 및 재생
                     event::KeyCode::Enter => {
+                        // 이미 재생중이면 무시
+                        if matches!(app.state, AppState::Playing) {
+                            continue;
+                        }
                         if let Some(path) = app.file_list.get(app.selected_index) {
                             // 기존 엔진 정지 (Drop 시 스트림 멈춤)
                             app.engine = None;
