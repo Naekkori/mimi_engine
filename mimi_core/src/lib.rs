@@ -26,11 +26,31 @@ pub enum PlayerState {
     Paused,
 }
 
+/// 엔진의 종합 상태 정보 (UI 조회용)
+#[derive(Debug, Clone)]
+pub struct MimiEngineStatus {
+    pub state: PlayerState,
+    pub current_tick: u64,
+    pub total_tick: u64,
+    pub current_time: std::time::Duration,
+}
+
 /// 외부 제어용 인터페이스 핸들
 pub struct MimiEngineHandle {
     command_tx: Sender<MimiCommand>,
-    state: Arc<Mutex<PlayerState>>,
+    status: Arc<Mutex<MimiEngineStatus>>,
     pub ui_rx: Receiver<MidiEngineEvent>, // 가사, 리듬 변환 플래그 등을 UI(Bevy) 쪽에서 받아갈 수 있는 채널
+    pub ui_tx: Sender<MidiEngineEvent>,
+}
+
+impl MimiEngineHandle {
+    /// 현재 엔진의 통합 상태를 가져옴
+    pub fn get_status(&self) -> Result<MimiEngineStatus, anyhow::Error> {
+        self.status
+            .lock()
+            .map(|s| s.clone())
+            .map_err(|e| anyhow::anyhow!("상태 데이터 잠금 획득 실패: {:?}", e))
+    }
 }
 
 impl MimiEngineHandle {
@@ -41,7 +61,7 @@ impl MimiEngineHandle {
     }
 
     pub fn get_state(&self) -> PlayerState {
-        *self.state.lock().unwrap()
+        self.status.lock().unwrap().state
     }
 }
 
@@ -51,16 +71,16 @@ struct AudioPlaybackContext {
     synth: Synth,
     command_rx: Receiver<MimiCommand>,
     ui_tx: Sender<MidiEngineEvent>,
-    state: Arc<Mutex<PlayerState>>,
+    status: Arc<Mutex<MimiEngineStatus>>,
 
     // 내부 상태 트래킹 변수들
     current_state: PlayerState,
     master_key: i8,
     tempo_scale: f32,
     sample_rate: f64,
-
     // 음 걸림(Note stuck) 방지용 노트 온 추적 배열 (channel, note)
     active_notes: Vec<(u8, u8)>,
+    elapsed_time_sec: f64,
 }
 
 impl AudioPlaybackContext {
@@ -70,16 +90,22 @@ impl AudioPlaybackContext {
             match cmd {
                 MimiCommand::Play => {
                     self.current_state = PlayerState::Playing;
-                    *self.state.lock().unwrap() = PlayerState::Playing;
+                    self.status.lock().unwrap().state = PlayerState::Playing;
                 }
                 MimiCommand::Pause => {
                     self.current_state = PlayerState::Paused;
-                    *self.state.lock().unwrap() = PlayerState::Paused;
+                    self.status.lock().unwrap().state = PlayerState::Paused;
                     self.all_notes_off();
                 }
                 MimiCommand::Stop => {
                     self.current_state = PlayerState::Stopped;
-                    *self.state.lock().unwrap() = PlayerState::Stopped;
+                    {
+                        // 가드가 살아있는 동안 self를 다른 용도로 쓰지 않도록 스코프 분리
+                        let mut status = self.status.lock().unwrap();
+                        status.state = PlayerState::Stopped;
+                        status.current_time = std::time::Duration::from_secs(0);
+                    }
+                    self.elapsed_time_sec = 0.0;
                     self.all_notes_off();
                     self.sequencer.reset();
                 }
@@ -121,6 +147,9 @@ impl AudioPlaybackContext {
         // 1프레임(L/R 한 쌍)당 경과하는 시간(초) 계산
         let sec_per_frame = 1.0 / self.sample_rate;
 
+        // 대여 충돌 방지를 위해 필요한 값들을 미리 복사
+        let tempo_scale = self.tempo_scale;
+
         if self.current_state != PlayerState::Playing {
             // 정지 또는 일시정지 상태면 무음 처리
             for sample in output_buffer.iter_mut() {
@@ -132,8 +161,9 @@ impl AudioPlaybackContext {
         // 프레임 단위로 돌면서 정밀 시퀀싱 진행
         let mut sample_idx = 0;
         for _ in 0..num_frames {
+
             // 2. 1프레임 분량만큼 시퀀서 전진 및 발생한 이벤트 획득
-            let ready_events = self.sequencer.marching(sec_per_frame, self.tempo_scale);
+            let ready_events = self.sequencer.marching(sec_per_frame, tempo_scale);
 
             // 3. 발생한 미디 이벤트들을 합성기(oxisynth)에 전달
             for event in ready_events {
@@ -233,13 +263,51 @@ impl AudioPlaybackContext {
                     }
                 }
             }
-
+            
             // 4. 해당 프레임의 오디오 샘플 1쌍(L/R)을 슬라이스에 직접 합성
             self.synth
                 .write(&mut output_buffer[sample_idx..sample_idx + 2]);
 
             sample_idx += 2;
+
+            // 5. 연주가 끝났는지 확인 (모든 이벤트 처리 완료 시)
+            if self.sequencer.is_finished() {
+                self.current_state = PlayerState::Stopped;
+                {
+                    // status 가드가 self 메서드 호출 전에 드롭되도록 스코프 처리
+                    let mut status = self.status.lock().unwrap();
+                    status.state = PlayerState::Stopped;
+                    status.current_tick = 0;
+                    status.current_time = std::time::Duration::from_secs(0);
+                }
+                self.elapsed_time_sec = 0.0;
+                self.all_notes_off();
+                self.sequencer.reset();
+
+                // 버퍼의 남은 구간을 무음으로 채움
+                output_buffer[sample_idx..].fill(0.0);
+                break;
+            }
         }
+
+        // 연주 중일 때 실제 경과 시간 업데이트
+        if self.current_state == PlayerState::Playing {
+            self.elapsed_time_sec += num_frames as f64 / self.sample_rate;
+        }
+
+        // 한 주기의 오디오 데이터 생성이 끝난 후 공유 상태 업데이트
+        {
+            let mut status = self.status.lock().unwrap();
+            status.current_tick = self.sequencer.current_tick as u64;
+            status.total_tick = self.sequencer.total_ticks as u64;
+            status.current_time = std::time::Duration::from_secs_f64(self.elapsed_time_sec);
+        }
+
+        // 한 주기의 오디오 데이터 생성이 끝난 후 UI에 전송
+        let _ = self.ui_tx.send(MidiEngineEvent::TickUpdate {
+            current_tick: self.sequencer.current_tick as u64,
+            total_tick: self.sequencer.total_ticks as u64,
+        });
     }
 }
 
@@ -251,8 +319,14 @@ pub fn spawn_mimi_engine(
     let (command_tx, command_rx) = unbounded::<MimiCommand>();
     let (ui_tx, ui_rx) = unbounded::<MidiEngineEvent>();
 
-    let player_state = Arc::new(Mutex::new(PlayerState::Stopped));
-    let state_clone = Arc::clone(&player_state);
+    // 공유 상태 객체 초기화
+    let player_status = Arc::new(Mutex::new(MimiEngineStatus {
+        state: PlayerState::Stopped,
+        current_tick: 0,
+        total_tick: 0,
+        current_time: std::time::Duration::from_secs(0),
+    }));
+    let status_clone = Arc::clone(&player_status);
 
     // 1. CPAL을 통한 오디오 하드웨어 장치 열기
     let host = cpal::default_host();
@@ -280,19 +354,23 @@ pub fn spawn_mimi_engine(
 
     // 3. 시퀀서 준비
     let sequencer = MimiSequencer::from_byte(&midi_bytes)?;
+    
+    // 전체 틱 정보를 상태에 미리 반영
+    player_status.lock().unwrap().total_tick = sequencer.total_ticks as u64;
 
     // 4. 오디오 콜백 스레드로 넘겨줄 컨텍스트 객체 생성
     let mut playback_context = AudioPlaybackContext {
         sequencer,
         synth,
         command_rx,
-        ui_tx,
-        state: state_clone,
+        ui_tx: ui_tx.clone(),
+        status: status_clone,
         current_state: PlayerState::Stopped,
         master_key: 0,
         tempo_scale: 1.0,
         sample_rate,
         active_notes: Vec::new(),
+        elapsed_time_sec: 0.0,
     };
 
     // 5. CPAL 오디오 스트림 생성 (독립 하드웨어 스레드에서 무한 반복 호출됨)
@@ -311,8 +389,9 @@ pub fn spawn_mimi_engine(
 
     let handle = MimiEngineHandle {
         command_tx,
-        state: player_state,
+        status: player_status,
         ui_rx,
+        ui_tx,
     };
 
     // cpal::Stream의 수명이 다하면 소리가 끊기므로 Handle과 함께 반환하여 상위 메인에서 관리하도록 함

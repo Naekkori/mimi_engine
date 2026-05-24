@@ -16,6 +16,11 @@ pub enum MidiEngineEvent {
     RhythmConversion {
         is_enable: bool,
     },
+    //재생 진행 상태
+    TickUpdate{
+        current_tick: u64,
+        total_tick: u64,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +35,7 @@ pub struct MimiSequencer {
     pub current_event_index: usize,
     pub current_tick: f64,
     pub microseconds_per_tick: f64,
+    pub total_ticks: u32,
 }
 
 impl MimiSequencer {
@@ -44,7 +50,7 @@ impl MimiSequencer {
         let mut all_events = Vec::new();
 
         // 멀티트랙 미디파일을 단일절대 틱 타임라인으로 병합
-        for (track_idx, track) in smf.tracks.iter().enumerate() {
+        for (_track_idx, track) in smf.tracks.iter().enumerate() {
             let mut accum_tick = 0u32;
             let mut current_port = 0u8; // 기본포트 A(0)
 
@@ -57,13 +63,18 @@ impl MimiSequencer {
                     TrackEventKind::Meta(midly::MetaMessage::MidiPort(port)) => {
                         current_port = u8::from(*port);
                     }
-                    // 내장가사
-                    TrackEventKind::Meta(midly::MetaMessage::Lyric(bytes)) => {
-                        if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                    // 내장가사(Lyric) 및 일반 텍스트(Text) 이벤트 모두 처리
+                    TrackEventKind::Meta(midly::MetaMessage::Lyric(bytes)) | 
+                    TrackEventKind::Meta(midly::MetaMessage::Text(bytes)) => {
+                        // UTF-8이 아닌 경우(CP949 등)를 고려하여 손실 허용 변환
+                        let text = String::from_utf8_lossy(bytes).to_string();
+                        
+                        // 제어 문자나 메타데이터(예: @T, @L 등)가 아닌 실제 텍스트가 있을 때만 추가
+                        if !text.is_empty() && !text.starts_with('@') {
                             all_events.push(SequenceEvent {
                                 absolute_tick: accum_tick,
                                 inner: MidiEngineEvent::SmfKaraokeText { text },
-                            })
+                            });
                         }
                     }
                     // 연주이벤트
@@ -95,7 +106,8 @@ impl MimiSequencer {
         }
         // 모든 트랙 절대틱 기준 오름차순 으로
         all_events.sort_by_key(|e| e.absolute_tick);
-
+        // 마지막 이벤트의 절대틱을 총 틱으로 설정.
+        let total_ticks = all_events.last().map(|e| e.absolute_tick).unwrap_or(0);
         // 초기템포 설정
         let initial_per_beat = 500_000.0;
         let microseconds_per_tick = initial_per_beat / ppq as f64;
@@ -106,6 +118,7 @@ impl MimiSequencer {
             current_event_index: 0,
             current_tick: 0.0,
             microseconds_per_tick,
+            total_ticks,
         })
     }
     //시간 경과에 따라 틱을 전진시키고
@@ -120,10 +133,16 @@ impl MimiSequencer {
         let delta_ticks = delta_microsec / self.microseconds_per_tick;
         self.current_tick += delta_ticks;
 
+        // 총 틱을 초과하지 않도록 제한 (오버런 방지)
+        if self.current_tick > self.total_ticks as f64 {
+            self.current_tick = self.total_ticks as f64;
+        }
+
         //현재 틱 위치까지 도달한 이벤트 전부 가져옴
         while self.current_event_index < self.event.len() {
             let event = &self.event[self.current_event_index];
-            if event.absolute_tick as f64 <= self.current_tick {
+            // 부동 소수점 오차를 고려하여 아주 미세한 여유값(0.0001)을 더해 비교
+            if event.absolute_tick as f64 <= self.current_tick + 0.0001 {
                 // 도중 템포변경 이벤트 를 만나면 내부 틱당 소요시간 변경
                 if let MidiEngineEvent::MidiPlay {
                     kind: TrackEventKind::Meta(midly::MetaMessage::Tempo(tempo)),
@@ -140,14 +159,20 @@ impl MimiSequencer {
                 break;
             }
         }
-        
         triggered
     }
     
     //처음으로 되돌리기
     pub fn reset(&mut self) {
         self.current_event_index = 0;
-        self.current_tick = 0.0; // Changed from += 0.0 to = 0.0
+        self.current_tick = 0.0;
         self.microseconds_per_tick = 500_000.0 / self.ppq as f64;
+    }
+    
+    // 모든 이벤트가 실행됬는가
+    pub fn is_finished(&self) -> bool {
+        // 모든 이벤트가 이미 처리(발송)되었다면 연주는 끝난 것으로 간주함
+        // current_tick 조건보다 index 조건이 더 확실한 종료 신호임
+        self.current_event_index >= self.event.len()
     }
 }
