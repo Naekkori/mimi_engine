@@ -331,9 +331,23 @@ impl AudioPlaybackContext {
                     self.elapsed_time_sec = 0.0;
                     self.all_notes_off();
 
-                    // 신디사이저 리셋
+                    // 1. 신디사이저 하드웨어 완벽 초기화 (이전 곡 잔재 제거)
                     let _ = self.synth_a.system_reset();
                     let _ = self.synth_b.system_reset();
+
+                    // 모든 MIDI 채널에 기본 컨트롤 초기값 강제 적용 (Reset All Controllers & Default Volume)
+                    for synth in [&self.synth_a, &self.synth_b] {
+                        for ch in 0u32..16 {
+                            let _ = synth.cc(ch, 121, 0); // Reset All Controllers
+                            let _ = synth.cc(ch, 0, 0);   // Bank Select MSB
+                            let _ = synth.cc(ch, 32, 0);  // Bank Select LSB
+                            let _ = synth.program_change(ch, 0); // Default Grand Piano
+                            let _ = synth.cc(ch, 7, 100);  // Channel Volume Default
+                            let _ = synth.cc(ch, 11, 127); // Expression Default
+                            let _ = synth.cc(ch, 10, 64);  // Pan Default (Center)
+                            let _ = synth.pitch_bend(ch, 8192); // Pitch Bend Center
+                        }
+                    }
 
                     // 내부상태 초기화
                     self.bank_msb = [[0u8; 16]; 2];
@@ -356,6 +370,11 @@ impl AudioPlaybackContext {
                         status.total_tick = self.sequencer.total_ticks as u64;
                         status.current_time = std::time::Duration::from_secs(0);
                     }
+                    
+                    // 신규 곡의 음량 게인 강제 재조정
+                    let gain = self.master_volume as f32 / 100.0 * 2.0;
+                    self.synth_a.set_gain(gain);
+                    self.synth_b.set_gain(gain);
                 }
             }
         }
