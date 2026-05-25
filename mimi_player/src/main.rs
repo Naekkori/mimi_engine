@@ -54,6 +54,9 @@ struct App {
 
     // 진행바 마우스 드래그
     seek_bar_rect: ratatui::layout::Rect,
+
+    // 리스트 토글
+    browsing_toggle: bool
 }
 
 impl App {
@@ -82,6 +85,7 @@ impl App {
             current_chord_name: "Original (None)".to_string(),
             loading_rx: None,
             seek_bar_rect: ratatui::layout::Rect::default(),
+            browsing_toggle: true,
         }
     }
 }
@@ -249,6 +253,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                                         
                                         app.engine_status.state = PlayerState::Playing;
                                         app.state = AppState::Playing;
+                                        app.browsing_toggle = false;
                                         app.song_name = path.file_name().unwrap().to_string_lossy().to_string();
                                         needs_redraw = true;
                                     }
@@ -393,14 +398,14 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             }
                             needs_redraw = true;
                         }
-                        // 리스트로 돌아가기 (선택 바 초기화 등은 안함)
+                        // 리스트로 돌아가기 토글 (선택 바 초기화 등은 안함)
                         event::KeyCode::Esc => {
-                            if let Some(handle) = &app.engine {
-                                handle.send_command(MimiCommand::Stop).ok();
+                            if !app.browsing_toggle{
+                              app.state = AppState::Browsing;  
+                            }else {
+                              app.state = AppState::Playing;
                             }
-                            app.song_name = "Ready.".to_string();
-                            app.engine_status.state = PlayerState::Stopped;
-                            app.state = AppState::Browsing;
+                            app.browsing_toggle = !app.browsing_toggle;
                             needs_redraw = true;
                         }
                         _ => {}
@@ -505,7 +510,7 @@ fn render(frame: &mut Frame, app: &mut App) {
     let block = Block::bordered()
         .title_top(Line::from(format!("MIMI PLAYER - {}", version)).centered())
         .title_bottom("↑/↓: Select | Enter: Play | ")
-        .title_bottom("Esc: Back | <space>: Play/Pause | <s>: Stop | ,/.: Transpose | [/]: Tempo | ←/→: Seek | -/=: Volume");
+        .title_bottom("Esc: FileList | <space>: Play/Pause | <s>: Stop | ,/.: Transpose | [/]: Tempo | ←/→: Seek | -/=: Volume");
 
     let area = frame.area();
 
