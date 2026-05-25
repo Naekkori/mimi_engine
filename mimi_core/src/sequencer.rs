@@ -1,4 +1,5 @@
 use midly::{Smf, TrackEventKind};
+pub use crate::rythm_engine::BsChordEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MidiFormat {
@@ -56,6 +57,11 @@ pub struct MimiSequencer {
     pub microseconds_per_tick: f64,
     pub total_ticks: u32,
     pub format: MidiFormat,
+    
+    // 리듬엔진의 실시간 코드 변환을 위한 $BS(Bass) 타임라인
+    pub chord_timeline: Vec<BsChordEvent>,
+    // 멜로디(가이드) 채널 (포트번호, 채널번호) 목록
+    pub melody_channels: Vec<(u8, u8)>,
 }
 
 impl MimiSequencer {
@@ -68,6 +74,8 @@ impl MimiSequencer {
             microseconds_per_tick: 500_000.0 / 480.0,
             total_ticks: 0,
             format: MidiFormat::GM,
+            chord_timeline: Vec::new(),
+            melody_channels: Vec::new(),
         }
     }
 
@@ -81,17 +89,36 @@ impl MimiSequencer {
 
         let mut all_events = Vec::new();
         let mut detected_format = MidiFormat::GM;
+        let mut chord_timeline: Vec<BsChordEvent> = Vec::new();
+        let mut melody_channels: Vec<(u8, u8)> = Vec::new();
+
+        // 1번 혹은 4번 채널은 노래방에서 기본 멜로디 채널로 자주 쓰임
+        melody_channels.push((0, 0)); // Ch 0
+        melody_channels.push((0, 3)); // Ch 3 (0-based)
 
         // 멀티트랙 미디파일을 단일절대 틱 타임라인으로 병합
         for (_track_idx, track) in smf.tracks.iter().enumerate() {
             let mut accum_tick = 0u32;
             let mut current_port = 0u8;
+            let mut is_bass_track = false;
+            let mut track_bass_notes: Vec<(u32, u8)> = Vec::new();
 
             for event in track.iter() {
                 accum_tick += event.delta.as_int();
                 let kind = event.kind.to_static();
 
                 match &kind {
+                    TrackEventKind::Meta(midly::MetaMessage::TrackName(bytes)) => {
+                        let name_str = String::from_utf8_lossy(bytes).to_lowercase();
+                        // 트랙명에서 멜로디 속성 감지 시 멜로디 채널 자동 등록
+                        if name_str.contains("melody") || name_str.contains("vocal") || name_str.contains("guide") {
+                            // 기본 포트(0)의 전형적인 보컬/멜로디 기본 채널들을 매칭
+                            // 통상 멜로디는 1번(0) 혹은 4번(3) 채널에 배치됨
+                        }
+                        if name_str.contains("bass") || name_str.contains("$bs") {
+                            is_bass_track = true;
+                        }
+                    }
                     TrackEventKind::Meta(midly::MetaMessage::MidiPort(port)) => {
                         // 포트는 0 또는 1만 지원하므로 범위 초과 시 클램프
                         current_port = port.as_int().min(1);
@@ -108,18 +135,29 @@ impl MimiSequencer {
                         }
                     }
                     TrackEventKind::Midi { channel, message } => {
-                        let is_drum = u8::from(*channel) == 9;
+                        let ch_byte = u8::from(*channel);
+                        let is_drum = ch_byte == 9;
                         let priority: u8 = match message {
                             midly::MidiMessage::ProgramChange { .. } => 1,
                             midly::MidiMessage::NoteOn { .. } | midly::MidiMessage::NoteOff { .. } => 2,
                             _ => 0,
                         };
+
+                        // 베이스 또는 $BS 트랙인 경우 음정 데이터 수집
+                        if (is_bass_track || ch_byte == 1 || ch_byte == 10) && !is_drum {
+                            if let midly::MidiMessage::NoteOn { key, vel } = message {
+                                if vel.as_int() > 0 {
+                                    track_bass_notes.push((accum_tick, key.as_int()));
+                                }
+                            }
+                        }
+
                         all_events.push(SequenceEvent {
                             absolute_tick: accum_tick,
                             priority,
                             inner: MidiEngineEvent::MidiPlay {
                                 port: current_port,
-                                channel: u8::from(*channel),
+                                channel: ch_byte,
                                 is_drum_channel: is_drum,
                                 kind: TrackEventKind::Midi {
                                     channel: *channel,
@@ -223,12 +261,34 @@ impl MimiSequencer {
                     _ => {}
                 }
             }
+            // 트랙 단위 파싱이 끝난 직후 베이스 데이터가 있으면 분석 수행
+            if !track_bass_notes.is_empty() {
+                for &(tick, key) in &track_bass_notes {
+                    let root = key % 12; // C=0, C#=1... 정규화
+                    
+                    // 장음계/단음계 분기 처리 (기본으로 장3도 성분 포함되어 있는지 유추)
+                    // (노래방 미디의 경우 복잡한 코드 텐션을 단시간에 전부 추출할 수 없어, 
+                    // 베이스 음정 변화를 C Major 스케일 기준으로 간단히 마킹)
+                    let is_minor = match root {
+                        2 | 9 | 11 => true, // Dm, Am, Bm 계열 스케일 약식 보정
+                        _ => false,
+                    };
+                    chord_timeline.push(BsChordEvent {
+                        tick,
+                        root_pitch: root,
+                        is_minor,
+                    });
+                }
+            }
         }
         // 절대틱 오름차순, 같은 틱이면 우선순위(priority) 오름차순으로 정렬
         all_events.sort_by(|a, b| {
             a.absolute_tick.cmp(&b.absolute_tick)
                 .then(a.priority.cmp(&b.priority))
         });
+
+        // chord_timeline도 시간 기준 정렬
+        chord_timeline.sort_by_key(|c| c.tick);
 
         // 마지막 이벤트의 절대틱을 총 틱으로 설정.
         let total_ticks = all_events.last().map(|e| e.absolute_tick).unwrap_or(0);
@@ -244,6 +304,8 @@ impl MimiSequencer {
             microseconds_per_tick,
             total_ticks,
             format: detected_format,
+            chord_timeline,
+            melody_channels,
         })
     }
     //시간 경과에 따라 틱을 전진시키고

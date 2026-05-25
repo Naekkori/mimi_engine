@@ -1,7 +1,7 @@
 use color_eyre::eyre::eyre;
 use cpal; // 오디오 스트림 타입을 인식하기 위해 cpal 크레이트 선언
 use crossterm::event;
-use mimi_core::{KEY_MAX, KEY_MIN, TEMPO_MAX, TEMPO_MIN, VOLUME_MAX, VOLUME_MIN};
+use mimi_core::{KEY_MAX, KEY_MIN, TEMPO_MAX, TEMPO_MIN, VOLUME_MAX, VOLUME_MIN, Rhythm};
 use mimi_core::{MimiCommand, MimiEngineHandle, MimiEngineStatus, PlayerState};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -66,6 +66,7 @@ impl App {
                 tempo: 1.0,
                 key: 0,
                 volume: 50,
+                current_rhythm: Rhythm::Original,
             },
             file_list: Vec::new(),
             selected_index: 0,
@@ -275,6 +276,22 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                                         app.engine_status.state = PlayerState::Stopped;
                                         needs_redraw = true;
                                     }
+                                }
+                            }
+                        }
+                        // 리듬 변환 버튼 순환 트리거 ('r')
+                        event::KeyCode::Char('r') => {
+                            if let Some(handle) = &app.engine {
+                                let next_rhythm = match app.engine_status.current_rhythm {
+                                    Rhythm::Original => Rhythm::Disco,
+                                    Rhythm::Disco => Rhythm::GoGo,
+                                    Rhythm::GoGo => Rhythm::Techno,
+                                    Rhythm::Techno => Rhythm::Dance,
+                                    Rhythm::Dance => Rhythm::Original,
+                                };
+                                if handle.send_command(MimiCommand::SetRhythm(next_rhythm)).is_ok() {
+                                    app.engine_status.current_rhythm = next_rhythm;
+                                    needs_redraw = true;
                                 }
                             }
                         }
@@ -520,6 +537,19 @@ fn render(frame: &mut Frame, app: &mut App) {
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
                     ),
+                    Span::raw("   |   Rhythm: "),
+                    Span::styled(
+                        match app.engine_status.current_rhythm {
+                            Rhythm::Original => "Original Track",
+                            Rhythm::Disco => "DISCO VIBE",
+                            Rhythm::GoGo => "GO-GO BEAT",
+                            Rhythm::Techno => "TECHNO DRIVE",
+                            Rhythm::Dance => "CLUB DANCE",
+                        },
+                        Style::default()
+                            .fg(if app.engine_status.current_rhythm == Rhythm::Original { Color::DarkGray } else { Color::Green })
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ]),
                 Line::from({
                     let s = &app.engine_status;
@@ -534,7 +564,7 @@ fn render(frame: &mut Frame, app: &mut App) {
                     )
                 }),
                 Line::from(format!(
-                    "Transpose: {} | Tempo: {:.1} | Volume: {}",
+                    "Key: {:+2}  |  Tempo: {:.1}x  |  Volume: {:>3}%  |  Change Rhythm: [r]",
                     app.engine_status.key, app.engine_status.tempo, app.engine_status.volume
                 )),
             ];

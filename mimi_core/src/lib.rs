@@ -1,11 +1,13 @@
 // mimi_core/src/lib.rs
 
 mod sequencer;
+mod rythm_engine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use fluidlite::{IsSettings, IsSamples, Settings, Synth};
 use midly::TrackEventKind;
 pub use sequencer::{MidiEngineEvent, MidiFormat, MimiSequencer};
+pub use rythm_engine::{Rhythm, RhythmEngine, MidiNote, BsChordEvent};
 use std::sync::{Arc, Mutex};
 
 // 템포 배율 제한 (0.2 ~ 5.0)
@@ -30,6 +32,7 @@ pub enum MimiCommand {
     SetVolume(u8),  // 마스터 볼륨 (VOLUME_MIN ~ VOLUME_MAX)
     Seek(u32),      // 특정 절대 틱(Tick) 위치로 점프
     LoadSong(Vec<u8>), // 새로운 MIDI 바이너리를 시퀀서에 주입 후 리셋 대기
+    SetRhythm(Rhythm), // 실시간 리듬 모드 변경 (Original, Disco, GoGo, Techno, Dance)
 }
 
 /// 오디오 엔진의 현재 내부 상태
@@ -51,6 +54,7 @@ pub struct MimiEngineStatus {
     pub tempo: f32,
     pub key: i8,
     pub volume: u8,
+    pub current_rhythm: Rhythm,
 }
 
 /// 외부 제어용 인터페이스 핸들
@@ -105,6 +109,13 @@ struct AudioPlaybackContext {
     bank_lsb: [[u8; 16]; 2],
     drum_channels: [[bool; 16]; 2],
     channel_velocities: [[u8; 16]; 2],
+
+    // 실시간 리듬변환 개입 모듈
+    rhythm_engine: RhythmEngine,
+    // 현재 생성되어 연주되는 리듬 반주 노트 목록
+    generated_rhythm_notes: Vec<MidiNote>,
+    // 다음 연주해야 할 리듬 노트 인덱스
+    next_rhythm_note_index: usize,
 }
 
 impl AudioPlaybackContext {
@@ -132,6 +143,7 @@ impl AudioPlaybackContext {
                     self.elapsed_time_sec = 0.0;
                     self.all_notes_off();
                     self.sequencer.reset();
+                    self.next_rhythm_note_index = 0;
                 }
                 MimiCommand::SetKey(key) => {
                     // 키 변경 시 음걸림 예방을 위해 기존 소리 끄기
@@ -168,6 +180,10 @@ impl AudioPlaybackContext {
 
                     // 시퀀서 위치 이동 (인덱스 + 템포복원)
                     self.sequencer.seek_to(tick);
+                    
+                    // 리듬 변환 발생 노트 포인터 복원
+                    self.next_rhythm_note_index = self.generated_rhythm_notes
+                        .partition_point(|n| n.tick < tick);
 
                     #[derive(Clone, Copy)]
                     struct ChannelSetup {
@@ -375,6 +391,54 @@ impl AudioPlaybackContext {
                     let gain = self.master_volume as f32 / 100.0 * 2.0;
                     self.synth_a.set_gain(gain);
                     self.synth_b.set_gain(gain);
+
+                    // 새로운 곡 주입 시 리듬 반주 틱 생성용 타임라인 구성
+                    if self.rhythm_engine.current_rhythm != Rhythm::Original {
+                        self.generated_rhythm_notes = self.rhythm_engine.generate_accompaniment_tracks(
+                            self.sequencer.total_ticks,
+                            &self.sequencer.chord_timeline
+                        );
+                    } else {
+                        self.generated_rhythm_notes.clear();
+                    }
+                    self.next_rhythm_note_index = 0;
+                }
+                MimiCommand::SetRhythm(rhythm) => {
+                    // 키 및 리듬 상태 갱신
+                    self.rhythm_engine.current_rhythm = rhythm;
+                    self.status.lock().unwrap().current_rhythm = rhythm;
+
+                    // 실시간으로 멜로디 이외의 이전 음 찌꺼기 끄기 (Note Stuck 방지)
+                    // port 0, 1의 멜로디 채널(기본 ch 0, 3)을 제외한 모든 채널 소리 끄기
+                    for port in 0..2 {
+                        let synth = if port == 0 { &self.synth_a } else { &self.synth_b };
+                        for ch in 0..16 {
+                            // 멜로디가 아니면 All Notes Off 또는 Note Off 강제 주입
+                            let is_melody = self.sequencer.melody_channels.contains(&(port, ch));
+                            if !is_melody {
+                                let _ = synth.cc(ch as u32, 123, 0); // All Notes Off
+                                let _ = synth.cc(ch as u32, 120, 0); // All Sound Off
+                            }
+                        }
+                    }
+                    self.active_notes.retain(|&(p, ch, _)| {
+                        self.sequencer.melody_channels.contains(&(p, ch))
+                    });
+
+                    if rhythm != Rhythm::Original {
+                        // 선택된 리듬에 맞춰 실시간으로 대리 리듬 악보 생성해 냄
+                        self.generated_rhythm_notes = self.rhythm_engine.generate_accompaniment_tracks(
+                            self.sequencer.total_ticks,
+                            &self.sequencer.chord_timeline
+                        );
+                        // 현재 틱 이후의 첫 오프셋 지점 탐색
+                        let current_tick = self.sequencer.current_tick as u32;
+                        self.next_rhythm_note_index = self.generated_rhythm_notes
+                            .partition_point(|n| n.tick < current_tick);
+                    } else {
+                        self.generated_rhythm_notes.clear();
+                        self.next_rhythm_note_index = 0;
+                    }
                 }
             }
         }
@@ -461,6 +525,12 @@ impl AudioPlaybackContext {
                         kind,
                         is_drum_channel: _,
                     } => {
+                        // 리듬변환 작동 중일 때: 멜로디 채널이 아니면 원곡 이벤트 완전 필터링(무시)
+                        let is_melody = self.sequencer.melody_channels.contains(&(port, channel));
+                        if self.rhythm_engine.current_rhythm != Rhythm::Original && !is_melody {
+                            continue;
+                        }
+
                         // 포트 범위 보호 (0 또는 1만 유효)
                         let port = port.min(1);
                         let target_channel = channel as u32;
@@ -584,6 +654,57 @@ impl AudioPlaybackContext {
                 }
             }
 
+            // [리듬 개입] 생성해 놓은 엇박 리듬 노트들을 현재 진행 틱에 맞춰 분출
+            if self.rhythm_engine.current_rhythm != Rhythm::Original {
+                let current_tick = self.sequencer.current_tick as u32;
+                while self.next_rhythm_note_index < self.generated_rhythm_notes.len() {
+                    let note = &self.generated_rhythm_notes[self.next_rhythm_note_index];
+                    if note.tick <= current_tick {
+                        // 생성된 리듬은 무조건 Synth B 포트에서 소리 출력하도록 매핑 (드럼은 드럼전용, 그외는 댄스 셋)
+                        let is_drum = note.channel == 9;
+                        let target_channel = note.channel as u32;
+                        
+                        // 볼륨 마스킹 및 전이
+                        let vel = note.velocity as usize;
+                        let ch_idx = note.channel as usize;
+                        if vel as u8 > self.channel_velocities[1][ch_idx] {
+                            self.channel_velocities[1][ch_idx] = vel as u8;
+                        }
+
+                        // 조옮김(KEY) 적용은 멜로디만 하거나 댄스 리듬에도 통합 이조 적용 결정 가능
+                        // (반주는 마스터 키 이조를 같이 타고 가되, 드럼 채널(9)만 이조 무력화)
+                        let final_key = if is_drum {
+                            note.note_number
+                        } else {
+                            (note.note_number as i8 + self.master_key).clamp(0, 127) as u8
+                        };
+
+                        // 동적 노트 추적 등록
+                        self.active_notes.push((1, note.channel, final_key));
+
+                        // 해당되는 반주 악기 패치(Program Change) 강제 맵핑 적용
+                        if let Some(rhythm_pattern) = self.rhythm_engine.pattern_library.get(&self.rhythm_engine.current_rhythm) {
+                            if let Some(track) = rhythm_pattern.tracks.iter().find(|t| {
+                                match t.track_type {
+                                    crate::rythm_engine::TrackType::Drum => is_drum,
+                                    crate::rythm_engine::TrackType::Bass => note.channel == 1,
+                                    crate::rythm_engine::TrackType::Accompaniment => note.channel == 2,
+                                }
+                            }) {
+                                let _ = self.synth_b.program_change(target_channel, track.instrument_program as u32);
+                            }
+                        }
+
+                        // 리듬 노트 발송
+                        let _ = self.synth_b.note_on(target_channel, final_key as u32, note.velocity as u32);
+
+                        self.next_rhythm_note_index += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
             // 4. 오디오 합성
             let mut temp_a = [0.0f32; 2];
             let mut temp_b = [0.0f32; 2];
@@ -667,6 +788,7 @@ pub fn spawn_mimi_engine(
         tempo: 1.0,
         key: 0,
         volume: 50,
+        current_rhythm: Rhythm::Original,
     }));
     let status_clone = Arc::clone(&player_status);
 
@@ -761,6 +883,9 @@ pub fn spawn_mimi_engine(
             dc
         },
         channel_velocities: [[0u8; 16]; 2],
+        rhythm_engine: RhythmEngine::new(Rhythm::Original),
+        generated_rhythm_notes: Vec::new(),
+        next_rhythm_note_index: 0,
     };
 
     // 5. CPAL 오디오 스트림 생성 (독립 하드웨어 스레드에서 무한 반복 호출됨)
