@@ -203,49 +203,110 @@ impl RhythmEngine {
             tracks: gogo_tracks,
         });
 
-        // 3. 테크노 패턴 (초고속 질주 비트)
+        // 3. 테크노 패턴
         let mut techno_tracks = Vec::new();
         let mut techno_drum_notes = Vec::new();
-        // 테크노 쿵쿵쿵쿵 사중 포화
-        for tick in &[0, 480, 960, 1440] {
-            techno_drum_notes.push(MidiNote { tick: *tick, note_number: 36, velocity: 120, channel: 9 });
-            techno_drum_notes.push(MidiNote { tick: *tick + 80, note_number: 36, velocity: 0, channel: 9 });
-            techno_drum_notes.push(MidiNote { tick: *tick + 240, note_number: 42, velocity: 90, channel: 9 });
-            techno_drum_notes.push(MidiNote { tick: *tick + 320, note_number: 42, velocity: 0, channel: 9 });
+
+        // --- [드럼 트랙 (TrackType::Drum, Program 0 또는 GM/GS 매직 뱅크)] ---
+        // 1. 킥 드럼 (Key 36) - 주 4비트 포화 및 마디 끝머리 더블 연타
+        // NoteOn 240 -> 루프 0
+        // NoteOn 1200 -> 루프 960
+        // NoteOn 1800 -> 루프 1560 (이펙트 대신 킥 단타로 치환됨)
+        // NoteOn 1920 -> 루프 1680 (마디 마지막 엇박 킥 타격)
+        for &tick in &[0, 960, 1560, 1680] {
+            techno_drum_notes.push(MidiNote { tick, note_number: 36, velocity: 100, channel: 9 });
+            techno_drum_notes.push(MidiNote { tick: tick + 10, note_number: 36, velocity: 0, channel: 9 });
         }
-        // 미친 백 비트 스네어
-        for tick in &[480, 1440] {
-            techno_drum_notes.push(MidiNote { tick: *tick, note_number: 40, velocity: 110, channel: 9 });
-            techno_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 40, velocity: 0, channel: 9 });
+
+        // 2. 백비트 스네어 (Key 38) - 엇박 중심 축을 형성하는 스네어 포성
+        // NoteOn 720 -> 루프 480
+        // NoteOn 1680 -> 루프 1440
+        for &tick in &[480, 1440] {
+            techno_drum_notes.push(MidiNote { tick, note_number: 38, velocity: 100, channel: 9 });
+            techno_drum_notes.push(MidiNote { tick: tick + 10, note_number: 38, velocity: 0, channel: 9 });
         }
+
+        // 3. 클로즈 하이햇 (Key 42) - 테크노 특유의 질주감을 보조하는 하이햇 라인 전수 스캔
+        // NoteOn (미디): 240(0), 480(240), 600(360), 720(480), 960(720), 1200(960), 1440(1200), 1560(1320), 1680(1440), 1920(1680)
+        let techno_hh_ticks = [0, 240, 360, 480, 720, 960, 1200, 1320, 1440, 1680];
+        for &tick in &techno_hh_ticks {
+            techno_drum_notes.push(MidiNote { tick, note_number: 42, velocity: 100, channel: 9 });
+            techno_drum_notes.push(MidiNote { tick: tick + 10, note_number: 42, velocity: 0, channel: 9 });
+        }
+
+        // 4. 특수 테크노 사이키델릭 이펙트 음원 (Key 81)
+        // NoteOn 1920 -> 루프 1680 (Key 81, 길이 10틱)
+        techno_drum_notes.push(MidiNote { tick: 1680, note_number: 81, velocity: 100, channel: 9 });
+        techno_drum_notes.push(MidiNote { tick: 1690, note_number: 81, velocity: 0, channel: 9 });
+
         techno_tracks.push(RhythmTrack {
             track_type: TrackType::Drum,
-            instrument_program: 0,
+            instrument_program: 25, // TR-909 / 808 Analog Kit로 드럼 음색 교체
             notes: techno_drum_notes,
         });
 
-        // 테크노 베이스 (16비트 연사 톱니파 라인)
+        // --- [베이스 트랙 (TrackType::Bass, Program 38: Synth Bass 1)] ---
+        // 분석 데이터: Ch 10으로 흘러나온 2박, 4박, 6박, 8박 단위의 묵직한 엇바운스 베이스 라인 (길이 240틱)
+        // NoteOn 480~720 -> 루프 240~480
+        // NoteOn 960~1200 -> 루프 720~960
+        // NoteOn 1440~1680 -> 루프 1200~1440
+        // NoteOn 1920~2160 -> 루프 1680~1920
         let mut techno_bass_notes = Vec::new();
-        for i in 0..16 {
-            let note = if i % 2 == 0 { 36 } else { 36 + 12 };
-            let tick = i * 120;
+        let bass_active_intervals = [
+            (240, 480),
+            (720, 960),
+            (1200, 1440),
+            (1680, 1920),
+        ];
+        for &(start_tick, end_tick) in &bass_active_intervals {
             techno_bass_notes.push(MidiNote {
-                tick,
-                note_number: note,
-                velocity: 95,
+                tick: start_tick,
+                note_number: 36, // 근음(Root)에 대응하는 레퍼런스 기준 Key 36 (이조 연동)
+                velocity: 100,
                 channel: 1,
             });
             techno_bass_notes.push(MidiNote {
-                tick: tick + 80,
-                note_number: note,
+                tick: end_tick,
+                note_number: 36,
                 velocity: 0,
                 channel: 1,
             });
         }
+
         techno_tracks.push(RhythmTrack {
             track_type: TrackType::Bass,
             instrument_program: 38, // Synth Bass 1
             notes: techno_bass_notes,
+        });
+
+        // --- [반주 트랙 (TrackType::Accompaniment, Program 81: Sawtooth Lead)] ---
+        // 드럼 및 베이스와 엇물리는 4비트 정박 타이밍(0, 480, 960, 1440)에 짤막한 신스 스타카토 화음 배치
+        let mut techno_lead_notes = Vec::new();
+        let lead_active_ticks = [0, 480, 960, 1440];
+        
+        for &tick in &lead_active_ticks {
+            // C-Major 코드 구성음 기준 (실시간 코드 이조 연동)
+            for &note in &[60, 64, 67] {
+                techno_lead_notes.push(MidiNote {
+                    tick,
+                    note_number: note,
+                    velocity: 80,
+                    channel: 2,
+                });
+                // 베이스 출현(엇박 240틱 단위) 이전에 완전히 컷하여 숨통을 틔워줌 (길이 160틱)
+                techno_lead_notes.push(MidiNote {
+                    tick: tick + 160,
+                    note_number: note,
+                    velocity: 0,
+                    channel: 2,
+                });
+            }
+        }
+
+        techno_tracks.push(RhythmTrack {
+            track_type: TrackType::Accompaniment,
+            instrument_program: 81, // Sawtooth Lead
+            notes: techno_lead_notes,
         });
 
         self.pattern_library.insert(Rhythm::Techno, AdvancedRhythmPattern {
