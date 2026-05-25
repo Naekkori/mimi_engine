@@ -4,9 +4,9 @@ mod sequencer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use fluidlite::{IsSettings, IsSamples, Settings, Synth};
-use midly::{TrackEvent, TrackEventKind};
+use midly::TrackEventKind;
 pub use sequencer::{MidiEngineEvent, MidiFormat, MimiSequencer};
-use std::{collections::btree_map::Values, sync::{Arc, Mutex}};
+use std::sync::{Arc, Mutex};
 
 // 템포 배율 제한 (0.2 ~ 5.0)
 pub const TEMPO_MIN: f32 = 0.2;
@@ -168,61 +168,146 @@ impl AudioPlaybackContext {
                     // 시퀀서 위치 이동 (인덱스 + 템포복원)
                     self.sequencer.seek_to(tick);
 
-                    // Seek 지점 이전 이벤트 중 상태성 이벤트만 신디사이저에 재적용
+                    #[derive(Clone, Copy)]
+                    struct ChannelSetup {
+                        program: Option<u8>,
+                        bank_msb: u8,
+                        bank_lsb: u8,
+                        volume: Option<u8>,
+                        pan: Option<u8>,
+                        expression: Option<u8>,
+                        pitch_bend: Option<u16>,
+                    }
+
+                    let mut channel_presets = [[ChannelSetup {
+                        program: None,
+                        bank_msb: 0,
+                        bank_lsb: 0,
+                        volume: None,
+                        pan: None,
+                        expression: None,
+                        pitch_bend: None,
+                    }; 16]; 2];
+
+                    // Seek 지점 이전 이벤트 중 상태성 이벤트만 추적
                     for i in 0..self.sequencer.current_event_index {
                         let event = &self.sequencer.event[i];
                         match &event.inner {
-                            MidiEngineEvent::MidiPlay { port, channel, is_drum_channel, kind } => {
-                                let p = port.min(&1);
-                                let synth = if *p == 0 {
-                                    &mut self.synth_a
-                                }else{
-                                    &mut self.synth_b
-                                };
-                                let ch = *channel as u32;
-                                if let TrackEventKind::Midi {message,.. } = kind {
+                            MidiEngineEvent::MidiReset => {
+                                // 미디 리셋 시 누적 상태들도 모두 초기화
+                                channel_presets = [[ChannelSetup {
+                                    program: None,
+                                    bank_msb: 0,
+                                    bank_lsb: 0,
+                                    volume: None,
+                                    pan: None,
+                                    expression: None,
+                                    pitch_bend: None,
+                                }; 16]; 2];
+                                self.bank_msb = [[0u8; 16]; 2];
+                                self.bank_lsb = [[0u8; 16]; 2];
+                                self.drum_channels = [[false; 16]; 2];
+                                self.drum_channels[0][9] = true;
+                                self.drum_channels[1][9] = true;
+                            }
+                            MidiEngineEvent::MidiPlay { port, channel, is_drum_channel: _, kind } => {
+                                let p = (*port).min(1) as usize;
+                                let ch = (*channel).min(15) as usize;
+                                if let TrackEventKind::Midi { message, .. } = kind {
                                     match message {
-                                        midly::MidiMessage::Controller { controller, value }=>{
+                                        midly::MidiMessage::Controller { controller, value } => {
                                             let cc = controller.as_int();
                                             let val = value.as_int();
-                                            match cc{
-                                                0 => self.bank_msb[*p as usize][*channel as usize] = val,
-                                                32 => self.bank_lsb[*p as usize][*channel as usize] = val,
-                                                _ => {
-                                                    let _ = synth.cc(ch, cc as u32, val as u32);
+                                            match cc {
+                                                0 => {
+                                                    channel_presets[p][ch].bank_msb = val;
+                                                    self.bank_msb[p][ch] = val;
+                                                    if ch != 9 {
+                                                        // 이미 드럼 채널로 격상된 경우 덮어쓰기 방지 기능 적용
+                                                        if !self.drum_channels[p][ch] {
+                                                            if val == 120 || val == 126 || val == 127 {
+                                                                self.drum_channels[p][ch] = true;
+                                                            } else {
+                                                                self.drum_channels[p][ch] = false;
+                                                            }
+                                                        }
+                                                    }
                                                 }
+                                                32 => {
+                                                    channel_presets[p][ch].bank_lsb = val;
+                                                    self.bank_lsb[p][ch] = val;
+                                                }
+                                                7 => {
+                                                    channel_presets[p][ch].volume = Some(val);
+                                                }
+                                                10 => {
+                                                    channel_presets[p][ch].pan = Some(val);
+                                                }
+                                                11 => {
+                                                    channel_presets[p][ch].expression = Some(val);
+                                                }
+                                                _ => {}
                                             }
                                         }
-                                        midly::MidiMessage::ProgramChange { program } =>{
-                                            // 기존 ProgramChange 처리 로직과 동일
-                                            let pi = *p as usize;
-                                            let ci = *channel as usize;
-                                            let msb = self.bank_msb[pi][ci];
-                                            let lsb = self.bank_lsb[pi][ci];
-                                            let prog = program.as_int() as u32;
-                                            let is_drum = self.drum_channels[pi][ci];
-                                            let resolved_bank: u32 = match self.midi_format {
-                                                MidiFormat::GM => 0,
-                                                MidiFormat::GS => if is_drum { (msb as u32) << 7 } else {0},
-                                                MidiFormat::XG => 0,
-                                            };
-                                            let _ = synth.cc(ch, 0, resolved_bank >> 7);
-                                            let _ = synth.cc(ch, 32, lsb as u32);
-                                            let _ = synth.program_change(ch, prog);
+                                        midly::MidiMessage::ProgramChange { program } => {
+                                            channel_presets[p][ch].program = Some(program.as_int());
                                         }
-                                        midly::MidiMessage::PitchBend { bend } =>{
-                                            let value = (bend.as_int() as i32 + 8192).clamp(0, 16383) as u32;
-                                            let _ = synth.pitch_bend(ch, value);
+                                        midly::MidiMessage::PitchBend { bend } => {
+                                            let value = (bend.as_int() as i32 + 8192).clamp(0, 16383) as u16;
+                                            channel_presets[p][ch].pitch_bend = Some(value);
                                         }
                                         _ => {}
                                     }
                                 }
                             }
                             MidiEngineEvent::SetDrumChannel { port, channel, is_drum } => {
-                                let p = port.min(&1);
-                                self.drum_channels[*p as usize][*channel.min(&15) as usize] = *is_drum;
+                                let p = (*port).min(1) as usize;
+                                let ch = (*channel).min(15) as usize;
+                                self.drum_channels[p][ch] = *is_drum;
                             }
                             _ => {}
+                        }
+                    }
+
+                    // 추적 완료 후 최종 Preset 상태를 2개 신디사이저 포트에 각각 적용
+                    for p in 0..2 {
+                        let synth = if p == 0 { &mut self.synth_a } else { &mut self.synth_b };
+                        for ch in 0..16 {
+                            let setup = &channel_presets[p][ch];
+                            let is_drum = self.drum_channels[p][ch];
+
+                            // 1. 드럼 또는 포맷별 뱅크 설정
+                            let resolved_bank: u32 = if is_drum {
+                                128 << 7
+                            } else {
+                                match self.midi_format {
+                                    MidiFormat::GM => 0,
+                                    MidiFormat::GS => 0,
+                                    MidiFormat::XG => (setup.bank_msb as u32) << 7,
+                                }
+                            };
+                            let _ = synth.cc(ch as u32, 0, (resolved_bank >> 7) & 127);
+                            let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
+
+                            // 2. 프로그램 체인지(악기 변경) 적용
+                            let prog = setup.program.unwrap_or(0);
+                            let _ = synth.program_change(ch as u32, prog as u32);
+
+                            // 3. 주요 제어 컨트롤러(볼륨, 팬, 익스프레션) 복원
+                            if let Some(vol) = setup.volume {
+                                let _ = synth.cc(ch as u32, 7, vol as u32);
+                            }
+                            if let Some(pan) = setup.pan {
+                                let _ = synth.cc(ch as u32, 10, pan as u32);
+                            }
+                            if let Some(exp) = setup.expression {
+                                let _ = synth.cc(ch as u32, 11, exp as u32);
+                            }
+
+                            // 4. 피치 벤드 복원
+                            if let Some(pb) = setup.pitch_bend {
+                                let _ = synth.pitch_bend(ch as u32, pb as u32);
+                            }
                         }
                     }
                     
@@ -386,6 +471,15 @@ impl AudioPlaybackContext {
                                     match cc_num {
                                         0 => {
                                             self.bank_msb[p][ch] = cc_val;
+                                            if ch != 9 { // 10번 채널은 항상 드럼 유지
+                                                if !self.drum_channels[p][ch] {
+                                                    if cc_val == 120 || cc_val == 126 || cc_val == 127 {
+                                                        self.drum_channels[p][ch] = true;
+                                                    } else {
+                                                        self.drum_channels[p][ch] = false;
+                                                    }
+                                                }
+                                            }
                                         }
                                         32 => {
                                             self.bank_lsb[p][ch] = cc_val;
@@ -404,25 +498,18 @@ impl AudioPlaybackContext {
 
                                     let is_drum = self.drum_channels[p][ch];
 
-                                    let resolved_bank: u32 = match self.midi_format {
-                                        MidiFormat::GM => 0,
-                                        MidiFormat::GS => {
-                                            if is_drum {
-                                                (msb as u32) << 7
-                                            } else {
-                                                0
-                                            }
-                                        }
-                                        MidiFormat::XG => {
-                                            match msb {
-                                                0 => 0,
-                                                127 => 0,
-                                                _ => 0,
-                                            }
+                                    // 드럼 채널일 경우 fluidlite 드럼 뱅크(128)로 맵핑
+                                    let resolved_bank: u32 = if is_drum {
+                                        128 << 7
+                                    } else {
+                                        match self.midi_format {
+                                            MidiFormat::GM => 0,
+                                            MidiFormat::GS => 0,
+                                            MidiFormat::XG => (msb as u32) << 7,
                                         }
                                     };
 
-                                    let _ = synth.cc(target_channel, 0, resolved_bank >> 7);
+                                    let _ = synth.cc(target_channel, 0, (resolved_bank >> 7) & 127);
                                     let _ = synth.cc(target_channel, 32, lsb as u32);
                                     let _ = synth.program_change(target_channel, prog);
                                 }

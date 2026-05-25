@@ -126,7 +126,7 @@ impl MimiSequencer {
                     }
                     //SysEx를 통한 시스템 리셋 및 드럼 채널 변경 감지
                     TrackEventKind::SysEx(data)=>{
-                        let is_gm_reset = data.len() >= 5
+                        let is_gm_reset = data.len() >= 4
                             && data[0] == 0x7E && data[2] == 0x09;
 
                         let is_gs_reset = data.len() >= 7
