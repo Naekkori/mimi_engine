@@ -186,7 +186,18 @@ impl AudioPlaybackContext {
                                             let cc = controller.as_int();
                                             let val = value.as_int();
                                             match cc{
-                                                0 => self.bank_msb[*p as usize][*channel as usize] = val,
+                                                0 => {
+                                                    self.bank_msb[*p as usize][*channel as usize] = val;
+                                                    let pi = *p as usize;
+                                                    let ci = *channel as usize;
+                                                    if ci != 9 { // 10번 채널은 항상 드럼 유지
+                                                        if val == 120 || val == 126 || val == 127 {
+                                                            self.drum_channels[pi][ci] = true;
+                                                        } else {
+                                                            self.drum_channels[pi][ci] = false;
+                                                        }
+                                                    }
+                                                }
                                                 32 => self.bank_lsb[*p as usize][*channel as usize] = val,
                                                 _ => {
                                                     let _ = synth.cc(ch, cc as u32, val as u32);
@@ -201,10 +212,16 @@ impl AudioPlaybackContext {
                                             let lsb = self.bank_lsb[pi][ci];
                                             let prog = program.as_int() as u32;
                                             let is_drum = self.drum_channels[pi][ci];
-                                            let resolved_bank: u32 = match self.midi_format {
-                                                MidiFormat::GM => 0,
-                                                MidiFormat::GS => if is_drum { (msb as u32) << 7 } else {0},
-                                                MidiFormat::XG => 0,
+                                            
+                                            // 드럼 채널인 경우 fluidlite 드럼 뱅크(128)로 맵핑함
+                                            let resolved_bank: u32 = if is_drum {
+                                                128 << 7
+                                            } else {
+                                                match self.midi_format {
+                                                    MidiFormat::GM => 0,
+                                                    MidiFormat::GS => 0,
+                                                    MidiFormat::XG => (msb as u32) << 7,
+                                                }
                                             };
                                             let _ = synth.cc(ch, 0, resolved_bank >> 7);
                                             let _ = synth.cc(ch, 32, lsb as u32);
@@ -386,6 +403,15 @@ impl AudioPlaybackContext {
                                     match cc_num {
                                         0 => {
                                             self.bank_msb[p][ch] = cc_val;
+                                            if ch != 9 { // 10번 채널은 항상 드럼 유지
+                                                if !self.drum_channels[p][ch] {
+                                                    if cc_val == 120 || cc_val == 126 || cc_val == 127 {
+                                                        self.drum_channels[p][ch] = true;
+                                                    } else {
+                                                        self.drum_channels[p][ch] = false;
+                                                    }
+                                                }
+                                            }
                                         }
                                         32 => {
                                             self.bank_lsb[p][ch] = cc_val;
@@ -404,21 +430,14 @@ impl AudioPlaybackContext {
 
                                     let is_drum = self.drum_channels[p][ch];
 
-                                    let resolved_bank: u32 = match self.midi_format {
-                                        MidiFormat::GM => 0,
-                                        MidiFormat::GS => {
-                                            if is_drum {
-                                                (msb as u32) << 7
-                                            } else {
-                                                0
-                                            }
-                                        }
-                                        MidiFormat::XG => {
-                                            match msb {
-                                                0 => 0,
-                                                127 => 0,
-                                                _ => 0,
-                                            }
+                                    // 드럼 채널인 경우 fluidlite 드럼 뱅크(128)로 맵핑함
+                                    let resolved_bank: u32 = if is_drum {
+                                        128 << 7
+                                    } else {
+                                        match self.midi_format {
+                                            MidiFormat::GM => 0,
+                                            MidiFormat::GS => 0,
+                                            MidiFormat::XG => (msb as u32) << 7,
                                         }
                                     };
 
