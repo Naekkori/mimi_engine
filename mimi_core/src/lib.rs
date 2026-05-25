@@ -646,12 +646,13 @@ impl AudioPlaybackContext {
                             continue;
                         }
 
-                        // 포트 범위 보호 (0 또는 1만 유효)
-                        let port = port.min(1);
+                        // 포트 범위 설정: SMF 포트 번호 그대로 맵핑하되 안전하게 min(1) 적용
+                        // 단, Port P 등 15번 포트와 같이 고번호 포트 이진 이벤트는 synth_b 포트(1)로 라우팅되도록 설정하여 소리 및 코드 추출에 기여하게 함
+                        let synth_port = if port >= 1 { 1 } else { 0 };
                         let target_channel = channel as u32;
                         // 포트에 해당되는 synth 지정
-                        let synth = if port == 0 { &self.synth_a } else { &self.synth_b };
-                        let is_drum_ch = self.drum_channels[port as usize][channel as usize];
+                        let synth = if synth_port == 0 { &self.synth_a } else { &self.synth_b };
+                        let is_drum_ch = self.drum_channels[synth_port][channel as usize];
 
                         if let midly::TrackEventKind::Midi { message, .. } = kind {
                             match message {
@@ -666,13 +667,13 @@ impl AudioPlaybackContext {
                                             (raw_key as i8 + self.master_key).clamp(0, 127) as u8
                                         };
 
-                                        let p = port as usize;
+                                        let p = synth_port;
                                         let ch = channel as usize;
                                         if vel > self.channel_velocities[p][ch] {
                                             self.channel_velocities[p][ch] = vel;
                                         }
 
-                                        self.active_notes.push((port, channel, final_key));
+                                        self.active_notes.push((synth_port as u8, channel, final_key));
                                         let _ = synth.note_on(target_channel, final_key as u32, vel as u32);
                                     } else {
                                         let final_key = if is_drum_ch {
@@ -681,7 +682,7 @@ impl AudioPlaybackContext {
                                             (raw_key as i8 + self.master_key).clamp(0, 127) as u8
                                         };
                                         self.active_notes.retain(|&(p, ch, n)| {
-                                            !(p == port && ch == channel && n == final_key)
+                                            !(p == synth_port as u8 && ch == channel && n == final_key)
                                         });
                                         let _ = synth.note_off(target_channel, final_key as u32);
                                     }
@@ -694,14 +695,14 @@ impl AudioPlaybackContext {
                                         (raw_key as i8 + self.master_key).clamp(0, 127) as u8
                                     };
                                     self.active_notes.retain(|&(p, ch, n)| {
-                                        !(p == port && ch == channel && n == final_key)
+                                        !(p == synth_port as u8 && ch == channel && n == final_key)
                                     });
                                     let _ = synth.note_off(target_channel, final_key as u32);
                                 }
                                 midly::MidiMessage::Controller { controller, value } => {
                                     let cc_num = controller.as_int();
                                     let cc_val = value.as_int();
-                                    let p = port as usize;
+                                    let p = synth_port;
                                     let ch = channel as usize;
 
                                     match cc_num {
@@ -726,7 +727,7 @@ impl AudioPlaybackContext {
                                     }
                                 }
                                 midly::MidiMessage::ProgramChange { program } => {
-                                    let p = port as usize;
+                                    let p = synth_port;
                                     let ch = channel as usize;
                                     let msb = self.bank_msb[p][ch];
                                     let lsb = self.bank_lsb[p][ch];

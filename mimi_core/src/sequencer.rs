@@ -91,6 +91,9 @@ impl MimiSequencer {
         let mut detected_format = MidiFormat::GM;
         let mut chord_timeline: Vec<BsChordEvent> = Vec::new();
         let mut melody_channels: Vec<(u8, u8)> = Vec::new();
+        
+        // 가사 이벤트를 수집하여 $BS 베이스 라인이 아예 없을 때의 폴백용 코드 구조
+        let mut lyric_chords: Vec<(u32, String)> = Vec::new();
 
         // 1번 혹은 4번 채널은 노래방에서 기본 멜로디 채널로 자주 쓰임
         melody_channels.push((0, 0)); // Ch 0
@@ -103,6 +106,11 @@ impl MimiSequencer {
             let mut is_bass_track = false;
             let mut track_bass_notes: Vec<(u32, u8)> = Vec::new();
 
+            // Domnino 화면에 나온 반주기 물리 포트 매핑 분석 적용:
+            // Conductor 및 $BS, $GS, $RS, $FS 트랙들은 화면상 Port P (실제 미디 포트 번호 15 혹은 특정 디바이스 규격)로 출력됨
+            // midly에서는 MidiPort(port)가 u8 형식이므로 0~15 가이드라인 가능.
+            // 특히 Port P, Port C, Port N 등으로 표기되는 반주기 메타데이터 대응
+
             for event in track.iter() {
                 accum_tick += event.delta.as_int();
                 let kind = event.kind.to_static();
@@ -112,21 +120,25 @@ impl MimiSequencer {
                         let name_str = String::from_utf8_lossy(bytes).to_lowercase();
                         // 트랙명에서 멜로디 속성 감지 시 멜로디 채널 자동 등록
                         if name_str.contains("melody") || name_str.contains("vocal") || name_str.contains("guide") {
-                            // 기본 포트(0)의 전형적인 보컬/멜로디 기본 채널들을 매칭
-                            // 통상 멜로디는 1번(0) 혹은 4번(3) 채널에 배치됨
+                            // 기본 보컬 멜로디 가이드라인 채널 매칭
                         }
+                        // TJ/KY 노래방 반주기 특수 포맷 트랙명 검출:
+                        // $BS (Bass), $GS (Guide Melody), $RS (Rhythm Section), $FS (Fill-in), $MW (Melody Wave) 등
                         if name_str.contains("bass") || name_str.contains("$bs") {
                             is_bass_track = true;
                         }
                     }
                     TrackEventKind::Meta(midly::MetaMessage::MidiPort(port)) => {
-                        // 포트는 0 또는 1만 지원하므로 범위 초과 시 클램프
-                        current_port = port.as_int().min(1);
+                        // 포트 번호 그대로 유지 (0, 1 외에 2 이상의 반주기 포트번호도 정상 맵핑)
+                        current_port = port.as_int();
                     }
                     TrackEventKind::Meta(midly::MetaMessage::Lyric(bytes)) | 
                     TrackEventKind::Meta(midly::MetaMessage::Text(bytes)) => {
                         let text = String::from_utf8_lossy(bytes).to_string();
                         if !text.is_empty() && !text.starts_with('@') {
+                            // 가사 텍스트에 포함된 코드네임 정보 임시 추출 수집
+                            lyric_chords.push((accum_tick, text.clone()));
+
                             all_events.push(SequenceEvent {
                                 absolute_tick: accum_tick,
                                 priority: 0,
@@ -143,8 +155,15 @@ impl MimiSequencer {
                             _ => 0,
                         };
 
+                        // [중요] 노래방 반주기 전용 포트 감지 필터 수정:
+                        // Domino 스크린샷 판결 결과: 
+                        // - Conductor(지휘자/구간템포 포트), $GS, $BS, $RS, $FS 등이 "Port P"로 송출되고 있음.
+                        // - 미디 파일 편집기에서 "Port P"는 15번 포트(0-based 15 = 16번째 포트, M110 등) 또는 특정 포트 채널을 지칭함.
+                        // - 따라서 is_bass_track(트랙명이 $BS인 경우) 이거나, 채널 1/10번 베이스 혹은 물리 포트가 Port P 영역인 경우 모두에 대응.
+                        let is_bs_track_or_port = is_bass_track || ch_byte == 1 || ch_byte == 10 || current_port == 15 || current_port == 1;
+
                         // 베이스 또는 $BS 트랙인 경우 음정 데이터 수집
-                        if (is_bass_track || ch_byte == 1 || ch_byte == 10) && !is_drum {
+                        if is_bs_track_or_port && !is_drum {
                             if let midly::MidiMessage::NoteOn { key, vel } = message {
                                 if vel.as_int() > 0 {
                                     track_bass_notes.push((accum_tick, key.as_int()));
@@ -281,6 +300,31 @@ impl MimiSequencer {
                 }
             }
         }
+
+        // 만약 $BS 트랙이나 베이스 라인 노트를 전혀 추출하지 못했다면 가사 기반 폴백 진행
+        if chord_timeline.is_empty() && !lyric_chords.is_empty() {
+            // 가사 문자열 중 전형적인 서양식 코드 스크립트([C], [Am], [G7], C, F, G 등 단독 기재) 추출
+            // 정규식이나 무겁게 쓰지 않고 단순 토큰 기반의 키 매핑 파서 구현
+            for (tick, text) in lyric_chords {
+                // 대괄호를 벗기거나 정리
+                let cleaned = text.trim()
+                    .replace('[', "").replace(']', "")
+                    .replace('(', "").replace(')', "");
+                
+                // 공백 기준으로 잘라 가사 사이에 코드 토큰이 있는지 검색
+                for word in cleaned.split_whitespace() {
+                    if let Some((root, is_minor)) = parse_single_chord_name(word) {
+                        chord_timeline.push(BsChordEvent {
+                            tick,
+                            root_pitch: root,
+                            is_minor,
+                        });
+                        break; // 한 가사 토큰 라인에서는 첫 번째 매치된 코드만 채택
+                    }
+                }
+            }
+        }
+
         // 절대틱 오름차순, 같은 틱이면 우선순위(priority) 오름차순으로 정렬
         all_events.sort_by(|a, b| {
             a.absolute_tick.cmp(&b.absolute_tick)
@@ -379,4 +423,54 @@ impl MimiSequencer {
         self.microseconds_per_tick = last_tempo / self.ppq as f64;
     }
     
+}
+
+/// 가사 텍스트 에 개별 존재할 수 있는 단일 코드(예: [C], Am, F#m, Bb7)를 분석하여
+/// 정규화된 root_pitch(0~11) 및 minor 여부를 식별해내는 경량 헬퍼
+fn parse_single_chord_name(word: &str) -> Option<(u8, bool)> {
+    if word.is_empty() {
+        return None;
+    }
+
+    // 앞뒤 노이즈 및 소문자 전이
+    let cleaned = word.trim().to_uppercase();
+    
+    // 첫 문자(A~G) 획득 및 매핑
+    let mut chars = cleaned.chars();
+    let first = chars.next()?;
+    
+    let root = match first {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None, // 유효한 서양 음계 코드가 아님
+    };
+
+    // 올림(#)/내림(b) 변화 상태 파악
+    let mut current_idx = 1;
+    let mut modifier = 0i8;
+    if let Some(second) = cleaned.chars().nth(current_idx) {
+        if second == '#' {
+            modifier = 1;
+            current_idx += 1;
+        } else if second == 'B' || second == '♭' {
+            modifier = -1;
+            current_idx += 1;
+        }
+    }
+
+    let final_root = ((root as i8 + modifier + 12) % 12) as u8;
+
+    // 마이너 속성 감지 (m, min, minor 기재 여부)
+    let is_minor = if let Some(sub) = cleaned.get(current_idx..) {
+        sub.starts_with('M') && !sub.starts_with("MAJ") || sub.starts_with("MIN")
+    } else {
+        false
+    };
+
+    Some((final_root, is_minor))
 }
