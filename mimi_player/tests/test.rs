@@ -29,13 +29,17 @@ fn engine_test() -> Result<(), anyhow::Error> {
 
     // 2. MIMI 오디오 엔진 가동 (CPAL 하드웨어 스트림 및 오디오 스레드 자동 시작)
     println!("[엔진] MIMI 오디오 엔진 및 CPAL 스트림 초기화 중...");
-    let (engine_handle, _stream) = spawn_mimi_engine(sf_path, midi_bytes, |p, status| {
+    let (engine_handle, _stream) = spawn_mimi_engine(sf_path, |p, status| {
         println!("[로딩 진행율] {:.0}% - {}", p * 100.0, status);
     })?;
     println!(
         "[엔진] 초기화 성공. 현재 상태: {:?}",
         engine_handle.get_state()
     );
+
+    // 2.1 미디 바이너리 로드
+    println!("[엔진] 미디 파일 주입 중: {}", midi_path);
+    engine_handle.send_command(MimiCommand::LoadSong(midi_bytes))?;
 
     // 3. UI(가사/이벤트) 모니터링 전용 백그라운드 스레드 분리
     // Bevy 엔진이 메인 스레드에서 주기적으로 수신하는 상황을 시뮬레이션합니다.

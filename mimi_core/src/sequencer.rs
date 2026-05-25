@@ -59,6 +59,18 @@ pub struct MimiSequencer {
 }
 
 impl MimiSequencer {
+    pub fn empty() -> Self {
+        Self {
+            event: Vec::new(),
+            ppq: 480,
+            current_event_index: 0,
+            current_tick: 0.0,
+            microseconds_per_tick: 500_000.0 / 480.0,
+            total_ticks: 0,
+            format: MidiFormat::GM,
+        }
+    }
+
     pub fn from_byte(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         let smf = Smf::parse(bytes).map_err(|e| anyhow::anyhow!("SMF 파싱 실패: {:?}", e))?;
 

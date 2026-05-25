@@ -127,6 +127,34 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
         app.list_state.select(Some(0));
     }
 
+    // [부팅 단계 초기화] 앱 시작과 동시에 엔진 기동
+    let (tx, rx) = mpsc::channel();
+    app.loading_rx = Some(rx);
+    app.state = AppState::Loading(0.0, "엔진 초기화 시작...".to_string());
+    let sf_path_str = sf_path.to_string();
+    let tx_clone = tx.clone();
+
+    std::thread::spawn(move || {
+        let tx_prog = tx_clone.clone();
+        let load_res = || -> Result<(MimiEngineHandle, cpal::Stream), String> {
+            let (handle, stream) =
+                mimi_core::spawn_mimi_engine(&sf_path_str, move |p, msg| {
+                    let _ = tx_prog.send(LoadingEvent::Progress(p, msg.to_string()));
+                })
+                .map_err(|e| format!("엔진 초기 생성 실패: {:?}", e))?;
+            Ok((handle, stream))
+        };
+
+        match load_res() {
+            Ok((handle, stream)) => {
+                let _ = tx.send(LoadingEvent::Success((handle, stream)));
+            }
+            Err(err) => {
+                let _ = tx.send(LoadingEvent::Error(err));
+            }
+        }
+    });
+
     let mut needs_redraw = true;
     loop {
         if needs_redraw {
@@ -148,9 +176,9 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         LoadingEvent::Success((handle, stream)) => {
                             app.engine = Some(handle);
                             app._stream = Some(stream);
-                            app.engine_status.state = PlayerState::Playing;
-                            app.state = AppState::Playing;
+                            app.state = AppState::Browsing;
                             app.loading_rx = None;
+                            app.song_name = "Ready.".to_string();
                             break;
                         }
                         LoadingEvent::Error(err) => {
@@ -206,48 +234,19 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                                 continue;
                             }
                             if let Some(path) = app.file_list.get(app.selected_index) {
-                                // 기존 엔진 정지 (Drop 시 스트림 멈춤)
-                                app.engine = None;
-                                app._stream = None;
-
-                                let (tx, rx) = mpsc::channel();
-                                app.loading_rx = Some(rx);
-                                app.state = AppState::Loading(0.0, "엔진 초기화 시작...".to_string());
-                                needs_redraw = true;
-
-                                let path_clone = path.clone();
-                                let sf_path_str = sf_path.to_string();
-                                let tx_clone = tx.clone();
-
-                                // 엔진 생성을 별도 스레드에서 수행
-                                std::thread::spawn(move || {
-                                    let load_res = || -> Result<(MimiEngineHandle, cpal::Stream), String> {
-                                        let midi_bytes = std::fs::read(&path_clone)
-                                            .map_err(|e| format!("파일 읽기 실패: {:?}", e))?;
+                                if let Some(handle) = &app.engine {
+                                    if let Ok(midi_bytes) = std::fs::read(path) {
+                                        // 1. 새 MIDI 로드 명령 송신
+                                        let _ = handle.send_command(MimiCommand::LoadSong(midi_bytes));
+                                        // 2. 즉시 가동 명령
+                                        let _ = handle.send_command(MimiCommand::Play);
                                         
-                                        let tx_prog = tx_clone.clone();
-                                        let (handle, stream) =
-                                            mimi_core::spawn_mimi_engine(&sf_path_str, midi_bytes, move |p, msg| {
-                                                let _ = tx_prog.send(LoadingEvent::Progress(p, msg.to_string()));
-                                            })
-                                            .map_err(|e| format!("엔진 생성 실패: {:?}", e))?;
-                                        
-                                        // 재생 시작 명령
-                                        handle.send_command(MimiCommand::Play).ok();
-                                        Ok((handle, stream))
-                                    };
-
-                                    match load_res() {
-                                        Ok((handle, stream)) => {
-                                            let _ = tx.send(LoadingEvent::Success((handle, stream)));
-                                        }
-                                        Err(err) => {
-                                            let _ = tx.send(LoadingEvent::Error(err));
-                                        }
+                                        app.engine_status.state = PlayerState::Playing;
+                                        app.state = AppState::Playing;
+                                        app.song_name = path.file_name().unwrap().to_string_lossy().to_string();
+                                        needs_redraw = true;
                                     }
-                                });
-
-                                app.song_name = path.file_name().unwrap().to_string_lossy().to_string();
+                                }
                             }
                         }
                         // 재생 제어
@@ -375,8 +374,6 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             if let Some(handle) = &app.engine {
                                 handle.send_command(MimiCommand::Stop).ok();
                             }
-                            app.engine = None;
-                            app._stream = None;
                             app.song_name = "Ready.".to_string();
                             app.engine_status.state = PlayerState::Stopped;
                             app.state = AppState::Browsing;
@@ -619,8 +616,11 @@ fn render(frame: &mut Frame, app: &mut App) {
             }
             //음악 진행바
             app.seek_bar_rect = outer[2];
-            let progress =
-                app.engine_status.current_tick as f64 / app.engine_status.total_tick as f64;
+            let progress = if app.engine_status.total_tick > 0 {
+                (app.engine_status.current_tick as f64 / app.engine_status.total_tick as f64).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             frame.render_widget(
                 Gauge::default()
                     .block(Block::bordered().title("Seek Bar".bold()))
@@ -632,10 +632,11 @@ fn render(frame: &mut Frame, app: &mut App) {
         AppState::Loading(progress, status) => {
             // 로딩 화면 및 로딩 바
             let center_area = centered_rect(60, 20, area);
+            let progress_ratio = progress.clamp(0.0, 1.0);
             let loader = Gauge::default()
                 .block(Block::bordered().title(format!(" Loading: {} ", status).bold()))
                 .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
-                .ratio(*progress);
+                .ratio(progress_ratio);
 
             frame.render_widget(loader, center_area);
         }

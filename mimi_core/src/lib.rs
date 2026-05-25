@@ -29,6 +29,7 @@ pub enum MimiCommand {
     SetTempo(f32),  // 템포 비율 (TEMPO_MIN ~ TEMPO_MAX)
     SetVolume(u8),  // 마스터 볼륨 (VOLUME_MIN ~ VOLUME_MAX)
     Seek(u32),      // 특정 절대 틱(Tick) 위치로 점프
+    LoadSong(Vec<u8>), // 새로운 MIDI 바이너리를 시퀀서에 주입 후 리셋 대기
 }
 
 /// 오디오 엔진의 현재 내부 상태
@@ -325,6 +326,37 @@ impl AudioPlaybackContext {
                     self.synth_a.set_gain(gain);
                     self.synth_b.set_gain(gain);
                 }
+                MimiCommand::LoadSong(bytes) => {
+                    self.current_state = PlayerState::Stopped;
+                    self.elapsed_time_sec = 0.0;
+                    self.all_notes_off();
+
+                    // 신디사이저 리셋
+                    let _ = self.synth_a.system_reset();
+                    let _ = self.synth_b.system_reset();
+
+                    // 내부상태 초기화
+                    self.bank_msb = [[0u8; 16]; 2];
+                    self.bank_lsb = [[0u8; 16]; 2];
+                    self.drum_channels = {
+                        let mut dc = [[false; 16]; 2];
+                        dc[0][9] = true;
+                        dc[1][9] = true;
+                        dc
+                    };
+                    self.channel_velocities = [[0u8; 16]; 2];
+
+                    if let Ok(new_seq) = MimiSequencer::from_byte(&bytes) {
+                        self.midi_format = new_seq.format;
+                        self.sequencer = new_seq;
+                        
+                        let mut status = self.status.lock().unwrap();
+                        status.state = PlayerState::Stopped;
+                        status.current_tick = 0;
+                        status.total_tick = self.sequencer.total_ticks as u64;
+                        status.current_time = std::time::Duration::from_secs(0);
+                    }
+                }
             }
         }
     }
@@ -601,7 +633,6 @@ impl AudioPlaybackContext {
 /// MIMI 엔진 구동 및 CPAL 하드웨어 오디오 스트림 활성화 함수
 pub fn spawn_mimi_engine(
     sf_path: &str,
-    midi_bytes: Vec<u8>,
     mut on_progress: impl FnMut(f32, &str) + Send + 'static,
 ) -> Result<(MimiEngineHandle, cpal::Stream), anyhow::Error> {
     on_progress(0.05, "오디오 출력 장치 및 스트림 초기화 중...");
@@ -679,10 +710,10 @@ pub fn spawn_mimi_engine(
     on_progress(0.85, "미디 시퀀서 초기화 중...");
 
     // 3. 시퀀서 준비
-    let sequencer = MimiSequencer::from_byte(&midi_bytes)?;
+    let sequencer = MimiSequencer::empty();
     let sequencer_format = sequencer.format;
 
-    player_status.lock().unwrap().total_tick = sequencer.total_ticks as u64;
+    player_status.lock().unwrap().total_tick = 0;
 
     on_progress(0.90, "오디오 출력 스트림 구축 중...");
 
