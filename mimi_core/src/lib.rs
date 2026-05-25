@@ -602,7 +602,9 @@ impl AudioPlaybackContext {
 pub fn spawn_mimi_engine(
     sf_path: &str,
     midi_bytes: Vec<u8>,
+    mut on_progress: impl FnMut(f32, &str) + Send + 'static,
 ) -> Result<(MimiEngineHandle, cpal::Stream), anyhow::Error> {
+    on_progress(0.05, "오디오 출력 장치 및 스트림 초기화 중...");
     let (command_tx, command_rx) = unbounded::<MimiCommand>();
     let (ui_tx, ui_rx) = unbounded::<MidiEngineEvent>();
 
@@ -635,6 +637,8 @@ pub fn spawn_mimi_engine(
         ));
     }
 
+    on_progress(0.15, "신디사이저 A 준비 중...");
+
     // 2. fluidlite 합성기 설정 (Synth A & B)
     let settings_a = Settings::new()
         .map_err(|e| anyhow::anyhow!("FluidLite Settings A 생성 실패: {:?}", e))?;
@@ -646,11 +650,14 @@ pub fn spawn_mimi_engine(
     let synth_a = Synth::new(settings_a)
         .map_err(|e| anyhow::anyhow!("FluidLite Synth A 생성 실패: {:?}", e))?;
 
+    on_progress(0.20, "사운드폰트 A 로딩 중...");
     synth_a.sfload(sf_path, true)
         .map_err(|e| anyhow::anyhow!("사운드폰트 A 로드 실패: {:?}", e))?;
 
     // 초기 볼륨에 따른 기본 게인 설정 (소리 확 튀는 현상 방지)
     synth_a.set_gain(1.0);
+
+    on_progress(0.50, "신디사이저 B 준비 중...");
 
     let settings_b = Settings::new()
         .map_err(|e| anyhow::anyhow!("FluidLite Settings B 생성 실패: {:?}", e))?;
@@ -662,17 +669,22 @@ pub fn spawn_mimi_engine(
     let synth_b = Synth::new(settings_b)
         .map_err(|e| anyhow::anyhow!("FluidLite Synth B 생성 실패: {:?}", e))?;
 
+    on_progress(0.55, "사운드폰트 B 로딩 중...");
     synth_b.sfload(sf_path, true)
         .map_err(|e| anyhow::anyhow!("사운드폰트 B 로드 실패: {:?}", e))?;
 
     // 초기 볼륨에 따른 기본 게인 설정 (소리 확 튀는 현상 방지)
     synth_b.set_gain(1.0);
 
+    on_progress(0.85, "미디 시퀀서 초기화 중...");
+
     // 3. 시퀀서 준비
     let sequencer = MimiSequencer::from_byte(&midi_bytes)?;
     let sequencer_format = sequencer.format;
 
     player_status.lock().unwrap().total_tick = sequencer.total_ticks as u64;
+
+    on_progress(0.90, "오디오 출력 스트림 구축 중...");
 
     // 4. 오디오 콜백 스레드로 넘겨줄 컨텍스트 객체 생성
     let mut playback_context = AudioPlaybackContext {
@@ -714,6 +726,8 @@ pub fn spawn_mimi_engine(
 
     // 스트림 즉시 가동
     stream.play()?;
+
+    on_progress(1.0, "엔진 초기화 완료!");
 
     let handle = MimiEngineHandle {
         command_tx,

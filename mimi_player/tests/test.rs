@@ -29,7 +29,9 @@ fn engine_test() -> Result<(), anyhow::Error> {
 
     // 2. MIMI 오디오 엔진 가동 (CPAL 하드웨어 스트림 및 오디오 스레드 자동 시작)
     println!("[엔진] MIMI 오디오 엔진 및 CPAL 스트림 초기화 중...");
-    let (engine_handle, _stream) = spawn_mimi_engine(sf_path, midi_bytes)?;
+    let (engine_handle, _stream) = spawn_mimi_engine(sf_path, midi_bytes, |p, status| {
+        println!("[로딩 진행율] {:.0}% - {}", p * 100.0, status);
+    })?;
     println!(
         "[엔진] 초기화 성공. 현재 상태: {:?}",
         engine_handle.get_state()
