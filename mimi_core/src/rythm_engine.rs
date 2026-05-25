@@ -8,6 +8,8 @@ pub enum Rhythm {
     GoGo,
     Dance,
     Techno,
+    Hiphop,
+    Jitterbug,
     Original, // 원곡 (꺼짐)
 }
 
@@ -22,7 +24,7 @@ pub enum TrackType {
 pub struct MidiNote {
     pub tick: u32,
     pub note_number: u8,
-    pub velocity: u8,
+    pub velocity: u8, // velocity가 0이면 Note-Off를 상징
     pub channel: u8,
 }
 
@@ -66,6 +68,7 @@ impl RhythmEngine {
     }
 
     /// 기본 탑재할 번들 리듬 패턴(디스코, 고고, 테크노, 댄스) 초기 로드
+    /// 본 리듬 패턴은 기본 PPQ=480 기준으로 작성되었음
     fn register_default_patterns(&mut self) { 
         // 1. 디스코 패턴 (1마디 = 1920틱)
         let mut disco_tracks = Vec::new();
@@ -75,18 +78,22 @@ impl RhythmEngine {
         // 정박 4비트 킥 드럼 (36)
         for tick in &[0, 480, 960, 1440] {
             disco_drum_notes.push(MidiNote { tick: *tick, note_number: 36, velocity: 110, channel: 9 });
+            disco_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 36, velocity: 0, channel: 9 });
         }
         // 백비트 스네어 (38)
         for tick in &[480, 1440] {
             disco_drum_notes.push(MidiNote { tick: *tick, note_number: 38, velocity: 105, channel: 9 });
+            disco_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 38, velocity: 0, channel: 9 });
         }
         // 엇박 오픈하이햇 (46)
         for tick in &[240, 720, 1200, 1680] {
             disco_drum_notes.push(MidiNote { tick: *tick, note_number: 46, velocity: 90, channel: 9 });
+            disco_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 46, velocity: 0, channel: 9 });
         }
         // 정박 클로즈하이햇 (42)
         for tick in &[0, 480, 960, 1440] {
             disco_drum_notes.push(MidiNote { tick: *tick, note_number: 42, velocity: 85, channel: 9 });
+            disco_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 42, velocity: 0, channel: 9 });
         }
         disco_tracks.push(RhythmTrack {
             track_type: TrackType::Drum,
@@ -94,7 +101,7 @@ impl RhythmEngine {
             notes: disco_drum_notes,
         });
 
-        // 디스코 베이스 (8비트 옥타브 교대 질주)
+        // 디스코 베이스 (8비트 옥타브 교대 질주 - 뚝뚝 끊기도록 Note-Off 페어링)
         let mut disco_bass_notes = Vec::new();
         let base_roots = [
             (0, 36), (240, 48), (480, 36), (720, 48),
@@ -102,6 +109,7 @@ impl RhythmEngine {
         ];
         for &(tick, note) in &base_roots {
             disco_bass_notes.push(MidiNote { tick, note_number: note, velocity: 100, channel: 1 });
+            disco_bass_notes.push(MidiNote { tick: tick + 160, note_number: note, velocity: 0, channel: 1 });
         }
         disco_tracks.push(RhythmTrack {
             track_type: TrackType::Bass,
@@ -109,12 +117,16 @@ impl RhythmEngine {
             notes: disco_bass_notes,
         });
 
-        // 디스코 피아노 반주 (엇박 타건)
+        // 디스코 피아노 반주 (엇박 스타카토 느낌으로 짧게 끊어줌)
         let mut disco_piano_notes = Vec::new();
         for &tick in &[240, 720, 1200, 1680] {
             disco_piano_notes.push(MidiNote { tick, note_number: 60, velocity: 85, channel: 2 }); // C
             disco_piano_notes.push(MidiNote { tick, note_number: 64, velocity: 85, channel: 2 }); // E
             disco_piano_notes.push(MidiNote { tick, note_number: 67, velocity: 85, channel: 2 }); // G
+
+            disco_piano_notes.push(MidiNote { tick: tick + 120, note_number: 60, velocity: 0, channel: 2 }); 
+            disco_piano_notes.push(MidiNote { tick: tick + 120, note_number: 64, velocity: 0, channel: 2 }); 
+            disco_piano_notes.push(MidiNote { tick: tick + 120, note_number: 67, velocity: 0, channel: 2 }); 
         }
         disco_tracks.push(RhythmTrack {
             track_type: TrackType::Accompaniment,
@@ -135,14 +147,17 @@ impl RhythmEngine {
         // 킥 드럼 변형 형태
         for tick in &[0, 720, 960, 1200] {
             gogo_drum_notes.push(MidiNote { tick: *tick, note_number: 36, velocity: 110, channel: 9 });
+            gogo_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 36, velocity: 0, channel: 9 });
         }
         // 스네어 (백비트)
         for tick in &[480, 1440] {
             gogo_drum_notes.push(MidiNote { tick: *tick, note_number: 38, velocity: 105, channel: 9 });
+            gogo_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 38, velocity: 0, channel: 9 });
         }
         // 8비트 고정 하이햇 (42)
         for tick in &[0, 240, 480, 720, 960, 1200, 1440, 1680] {
             gogo_drum_notes.push(MidiNote { tick: *tick, note_number: 42, velocity: 80, channel: 9 });
+            gogo_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 42, velocity: 0, channel: 9 });
         }
         gogo_tracks.push(RhythmTrack {
             track_type: TrackType::Drum,
@@ -158,6 +173,7 @@ impl RhythmEngine {
         ];
         for &(tick, note) in &gogo_bass {
             gogo_bass_notes.push(MidiNote { tick, note_number: note, velocity: 100, channel: 1 });
+            gogo_bass_notes.push(MidiNote { tick: tick + 160, note_number: note, velocity: 0, channel: 1 });
         }
         gogo_tracks.push(RhythmTrack {
             track_type: TrackType::Bass,
@@ -171,6 +187,10 @@ impl RhythmEngine {
             gogo_piano_notes.push(MidiNote { tick, note_number: 60, velocity: 85, channel: 2 });
             gogo_piano_notes.push(MidiNote { tick, note_number: 64, velocity: 85, channel: 2 });
             gogo_piano_notes.push(MidiNote { tick, note_number: 67, velocity: 85, channel: 2 });
+
+            gogo_piano_notes.push(MidiNote { tick: tick + 200, note_number: 60, velocity: 0, channel: 2 });
+            gogo_piano_notes.push(MidiNote { tick: tick + 200, note_number: 64, velocity: 0, channel: 2 });
+            gogo_piano_notes.push(MidiNote { tick: tick + 200, note_number: 67, velocity: 0, channel: 2 });
         }
         gogo_tracks.push(RhythmTrack {
             track_type: TrackType::Accompaniment,
@@ -189,11 +209,14 @@ impl RhythmEngine {
         // 테크노 쿵쿵쿵쿵 사중 포화
         for tick in &[0, 480, 960, 1440] {
             techno_drum_notes.push(MidiNote { tick: *tick, note_number: 36, velocity: 120, channel: 9 });
+            techno_drum_notes.push(MidiNote { tick: *tick + 80, note_number: 36, velocity: 0, channel: 9 });
             techno_drum_notes.push(MidiNote { tick: *tick + 240, note_number: 42, velocity: 90, channel: 9 });
+            techno_drum_notes.push(MidiNote { tick: *tick + 320, note_number: 42, velocity: 0, channel: 9 });
         }
         // 미친 백 비트 스네어
         for tick in &[480, 1440] {
             techno_drum_notes.push(MidiNote { tick: *tick, note_number: 40, velocity: 110, channel: 9 });
+            techno_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 40, velocity: 0, channel: 9 });
         }
         techno_tracks.push(RhythmTrack {
             track_type: TrackType::Drum,
@@ -205,10 +228,17 @@ impl RhythmEngine {
         let mut techno_bass_notes = Vec::new();
         for i in 0..16 {
             let note = if i % 2 == 0 { 36 } else { 36 + 12 };
+            let tick = i * 120;
             techno_bass_notes.push(MidiNote {
-                tick: i * 120,
+                tick,
                 note_number: note,
                 velocity: 95,
+                channel: 1,
+            });
+            techno_bass_notes.push(MidiNote {
+                tick: tick + 80,
+                note_number: note,
+                velocity: 0,
                 channel: 1,
             });
         }
@@ -228,12 +258,15 @@ impl RhythmEngine {
         let mut dance_drum_notes = Vec::new();
         for tick in &[0, 480, 960, 1440] {
             dance_drum_notes.push(MidiNote { tick: *tick, note_number: 36, velocity: 115, channel: 9 });
+            dance_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 36, velocity: 0, channel: 9 });
         }
         for tick in &[480, 1440] {
             dance_drum_notes.push(MidiNote { tick: *tick, note_number: 38, velocity: 110, channel: 9 });
+            dance_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 38, velocity: 0, channel: 9 });
         }
         for tick in &[240, 720, 1200, 1680] {
             dance_drum_notes.push(MidiNote { tick: *tick, note_number: 46, velocity: 95, channel: 9 });
+            dance_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 46, velocity: 0, channel: 9 });
         }
         dance_tracks.push(RhythmTrack {
             track_type: TrackType::Drum,
@@ -243,10 +276,18 @@ impl RhythmEngine {
 
         let mut dance_bass_notes = Vec::new();
         for i in 0..8 {
+            let tick = i * 240;
+            let note = if i % 4 == 3 { 39 } else { 36 };
             dance_bass_notes.push(MidiNote {
-                tick: i * 240,
-                note_number: if i % 4 == 3 { 39 } else { 36 },
+                tick,
+                note_number: note,
                 velocity: 100,
+                channel: 1,
+            });
+            dance_bass_notes.push(MidiNote {
+                tick: tick + 120, // 길이를 더 짧게 (140 -> 120)
+                note_number: note,
+                velocity: 0,
                 channel: 1,
             });
         }
@@ -256,17 +297,165 @@ impl RhythmEngine {
             notes: dance_bass_notes,
         });
 
+        // 댄스 반주 추가 (클럽 신스 사운드)
+        let mut dance_piano_notes = Vec::new();
+        for &tick in &[240, 720, 1200, 1680] {
+            // C, E, G (C-Major)
+            for &n in &[60, 64, 67] {
+                dance_piano_notes.push(MidiNote { tick, note_number: n, velocity: 80, channel: 2 });
+                dance_piano_notes.push(MidiNote { tick: tick + 100, note_number: n, velocity: 0, channel: 2 });
+            }
+        }
+        dance_tracks.push(RhythmTrack {
+            track_type: TrackType::Accompaniment,
+            instrument_program: 81, // Sawtooth Lead
+            notes: dance_piano_notes,
+        });
+
         self.pattern_library.insert(Rhythm::Dance, AdvancedRhythmPattern {
             length_ticks: 1920,
             tracks: dance_tracks,
         });
+
+        // 5. 힙합 패턴 (두툼한 90년대 붐벱 다운비트 그루브)
+        let mut hiphop_tracks = Vec::new();
+        let mut hiphop_drum_notes = Vec::new();
+        // 킥 드럼 (36) 싱코페이션 바운스
+        let hh_kick = [0, 240, 1080];
+        for tick in &hh_kick {
+            hiphop_drum_notes.push(MidiNote { tick: *tick, note_number: 36, velocity: 115, channel: 9 });
+            hiphop_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 36, velocity: 0, channel: 9 }); // 120 -> 100
+        }
+        // 스네어 (38 또는 40)
+        let hh_snare = [480, 1440];
+        for tick in &hh_snare {
+            hiphop_drum_notes.push(MidiNote { tick: *tick, note_number: 40, velocity: 110, channel: 9 });
+            hiphop_drum_notes.push(MidiNote { tick: *tick + 100, note_number: 40, velocity: 0, channel: 9 }); // 120 -> 100
+        }
+        // 레이드백 하이햇 (42)
+        for i in 0..8 {
+            let tick = i * 240;
+            // 엇박 오픈하이햇 포인트(오버레이)
+            let pitch = if i % 4 == 2 { 46 } else { 42 };
+            hiphop_drum_notes.push(MidiNote { tick, note_number: pitch, velocity: 85, channel: 9 });
+            hiphop_drum_notes.push(MidiNote { tick: tick + 60, note_number: pitch, velocity: 0, channel: 9 }); // 80 -> 60
+        }
+        hiphop_tracks.push(RhythmTrack {
+            track_type: TrackType::Drum,
+            instrument_program: 24, // 힙합/R&B 키트
+            notes: hiphop_drum_notes,
+        });
+
+        // 힙합 베이스 (재즈 스타일 무거운 핑거드 베이스)
+        let mut hiphop_bass_notes = Vec::new();
+        let hh_bass = [
+            (0, 36), (480, 43), (720, 41), (1080, 36)
+        ];
+        for &(tick, note) in &hh_bass {
+            hiphop_bass_notes.push(MidiNote { tick, note_number: note, velocity: 100, channel: 1 });
+            hiphop_bass_notes.push(MidiNote { tick: tick + 150, note_number: note, velocity: 0, channel: 1 }); // 180 -> 150
+        }
+        hiphop_tracks.push(RhythmTrack {
+            track_type: TrackType::Bass,
+            instrument_program: 32, // Acoustic Bass
+            notes: hiphop_bass_notes,
+        });
+
+        // 힙합 반주 (재즈 일렉트릭 피아노 코드 백킹)
+        let mut hiphop_piano_notes = Vec::new();
+        let hh_chords = [
+            (0, vec![60, 64, 67, 71]),     // CMaj7 (C-Major 기준으로 수정)
+            (960, vec![62, 65, 69, 72])    // Dm7
+        ];
+        for &(tick, ref notes) in &hh_chords {
+            for &note in notes {
+                hiphop_piano_notes.push(MidiNote { tick, note_number: note, velocity: 75, channel: 2 });
+                hiphop_piano_notes.push(MidiNote { tick: tick + 400, note_number: note, velocity: 0, channel: 2 }); // 600 -> 400
+            }
+        }
+        hiphop_tracks.push(RhythmTrack {
+            track_type: TrackType::Accompaniment,
+            instrument_program: 4, // Rhodes Piano
+            notes: hiphop_piano_notes,
+        });
+
+        self.pattern_library.insert(Rhythm::Hiphop, AdvancedRhythmPattern {
+            length_ticks: 1920,
+            tracks: hiphop_tracks,
+        });
+
+        // 6. 지루박 패턴 (동네 성인 캬바레 스타일의 2비트 셔플 그루브)
+        let mut jitterbug_tracks = Vec::new();
+        let mut jitterbug_drum_notes = Vec::new();
+        // 쿵-짝 쿵-짝 (쿵쿵 포화 킥과 강렬한 림샷)
+        for i in 0..4 {
+            let tick = i * 480;
+            // 쿵 (킥)
+            jitterbug_drum_notes.push(MidiNote { tick, note_number: 36, velocity: 120, channel: 9 });
+            jitterbug_drum_notes.push(MidiNote { tick: tick + 100, note_number: 36, velocity: 0, channel: 9 }); // 120 -> 100
+            // 짝 (스네어 림샷 37)
+            jitterbug_drum_notes.push(MidiNote { tick: tick + 240, note_number: 37, velocity: 110, channel: 9 });
+            jitterbug_drum_notes.push(MidiNote { tick: tick + 340, note_number: 37, velocity: 0, channel: 9 }); // 360 -> 340
+            // 하이햇 셔플 (치키치키 소리 유도)
+            jitterbug_drum_notes.push(MidiNote { tick: tick + 180, note_number: 42, velocity: 85, channel: 9 });
+            jitterbug_drum_notes.push(MidiNote { tick: tick + 220, note_number: 42, velocity: 0, channel: 9 }); // 240 -> 220
+            jitterbug_drum_notes.push(MidiNote { tick: tick + 420, note_number: 42, velocity: 85, channel: 9 });
+            jitterbug_drum_notes.push(MidiNote { tick: tick + 460, note_number: 42, velocity: 0, channel: 9 }); // 480 -> 460
+        }
+        jitterbug_tracks.push(RhythmTrack {
+            track_type: TrackType::Drum,
+            instrument_program: 0,
+            notes: jitterbug_drum_notes,
+        });
+
+        // 지루박 베이스 (단순 강렬한 튕김 비트)
+        let mut jitterbug_bass_notes = Vec::new();
+        for i in 0..4 {
+            let tick = i * 480;
+            let note = if i % 2 == 0 { 36 } else { 43 };
+            jitterbug_bass_notes.push(MidiNote { tick, note_number: note, velocity: 115, channel: 1 });
+            jitterbug_bass_notes.push(MidiNote { tick: tick + 150, note_number: note, velocity: 0, channel: 1 }); // 200 -> 150
+            
+            jitterbug_bass_notes.push(MidiNote { tick: tick + 240, note_number: note, velocity: 100, channel: 1 });
+            jitterbug_bass_notes.push(MidiNote { tick: tick + 390, note_number: note, velocity: 0, channel: 1 }); // 440 -> 390
+        }
+        jitterbug_tracks.push(RhythmTrack {
+            track_type: TrackType::Bass,
+            instrument_program: 35, // Picked Bass
+            notes: jitterbug_bass_notes,
+        });
+
+        // 지루박 아코디언/기타 반주 (뽕짝 특유의 엇박 칼 타건)
+        let mut jitterbug_piano_notes = Vec::new();
+        for i in 0..4 {
+            let tick = i * 480 + 240; // 엇박 '짝'에 타건
+            jitterbug_piano_notes.push(MidiNote { tick, note_number: 60, velocity: 90, channel: 2 });
+            jitterbug_piano_notes.push(MidiNote { tick, note_number: 64, velocity: 90, channel: 2 });
+            jitterbug_piano_notes.push(MidiNote { tick, note_number: 67, velocity: 90, channel: 2 });
+
+            jitterbug_piano_notes.push(MidiNote { tick: tick + 120, note_number: 60, velocity: 0, channel: 2 }); // 160 -> 120
+            jitterbug_piano_notes.push(MidiNote { tick: tick + 120, note_number: 64, velocity: 0, channel: 2 }); 
+            jitterbug_piano_notes.push(MidiNote { tick: tick + 120, note_number: 67, velocity: 0, channel: 2 }); 
+        }
+        jitterbug_tracks.push(RhythmTrack {
+            track_type: TrackType::Accompaniment,
+            instrument_program: 21, // Accordion
+            notes: jitterbug_piano_notes,
+        });
+
+        self.pattern_library.insert(Rhythm::Jitterbug, AdvancedRhythmPattern {
+            length_ticks: 1920,
+            tracks: jitterbug_tracks,
+        });
     }
 
     /// 원곡의 총 길이와 $BS 트랙 이벤트 배열을 받아 전체 변환 세션 트랙을 생성하는 핵심 함수
+    /// ppq_scale: 원곡의 PPQ가 기본 480이 아닐 경우(예: 96, 960 등) 패턴 재생 속도를 맞추기 위해 스케일링
     pub fn generate_accompaniment_tracks(
         &self,
         total_duration_ticks: u32,
         bs_timeline: &[BsChordEvent],
+        source_ppq: u16,
     ) -> Vec<MidiNote> {
         let mut generated_notes = Vec::new();
 
@@ -274,17 +463,25 @@ impl RhythmEngine {
             return generated_notes;
         }
 
+        let ppq_ratio = source_ppq as f64 / 480.0;
+
         // 1. 선택된 리듬 패턴 세트 로드
         if let Some(pattern) = self.pattern_library.get(&self.current_rhythm) {
+            let scaled_length_ticks = (pattern.length_ticks as f64 * ppq_ratio).round() as u32;
+
             let mut current_offset = 0;
+
+            // 각 트랙의 각 음표 번호별로 마지막에 적용된 이조 값을 저장 (Note-Off 시 동일 이조 적용을 위함)
+            let mut last_transpositions: HashMap<(usize, u8), u8> = HashMap::new();
 
             // 2. 원곡 길이만큼 리듬 루프 생성 진입
             while current_offset < total_duration_ticks {
                 
                 // 3. 루프 내의 각 악기 트랙별로 처리
-                for track in &pattern.tracks {
+                for (track_idx, track) in pattern.tracks.iter().enumerate() {
                     for note in &track.notes {
-                        let target_tick = current_offset + note.tick;
+                        let scaled_note_tick = (note.tick as f64 * ppq_ratio).round() as u32;
+                        let target_tick = current_offset + scaled_note_tick;
 
                         if target_tick >= total_duration_ticks {
                             break;
@@ -297,25 +494,32 @@ impl RhythmEngine {
                         };
 
                         // 5. 악기 성격에 따른 트랜스포즈 알고리즘 수행
-                        let mut final_note_number = note.note_number;
+                        let final_note_number;
 
-                        match track.track_type {
-                            TrackType::Drum => {
-                                // 드럼 채널은 음정 변환 없이 통과
-                            }
-                            TrackType::Bass | TrackType::Accompaniment => {
-                                // 패턴 리듬 파일이 기본적으로 C-Major(C=0) 기준으로 제작되었다고 가정
-                                // 가이드 근음(root_pitch)만큼 음정을 올려줌
-                                let mut shifted = note.note_number as i16 + current_chord.root_pitch as i16;
+                        if note.velocity > 0 {
+                            // Note-On: 현재 코드에 맞춰 이조 수행
+                            let mut shifted = note.note_number as i16 + current_chord.root_pitch as i16;
 
-                                // 만약 원곡 코드가 Minor인데, 패턴 소스가 장3도(E 성분)를 연주 중이라면 단3도로 보정
-                                if current_chord.is_minor && (note.note_number % 12 == 4) {
-                                    shifted -= 1; // 반음 내림
+                            match track.track_type {
+                                TrackType::Drum => {
+                                    // 드럼 채널은 음정 변환 없이 통과
+                                    final_note_number = note.note_number;
                                 }
-
-                                // MIDI Note Out Of Range 방지 (0 ~ 127)
-                                final_note_number = shifted.clamp(0, 127) as u8;
+                                TrackType::Bass | TrackType::Accompaniment => {
+                                    // 패턴 리듬 파일이 C-Major(C=0) 기준으로 제작되었다고 가정
+                                    // 만약 원곡 코드가 Minor인데, 패턴 소스가 장3도(E 성분)를 연주 중이라면 단3도로 보정
+                                    if current_chord.is_minor && (note.note_number % 12 == 4) {
+                                        shifted -= 1; // 반음 내림
+                                    }
+                                    final_note_number = shifted.clamp(0, 127) as u8;
+                                }
                             }
+                            // 이조된 값을 기록해 둠
+                            last_transpositions.insert((track_idx, note.note_number), final_note_number);
+                        } else {
+                            // Note-Off: 이전에 해당 음표에 적용했던 이조 값을 그대로 사용
+                            // 기록이 없으면(이론상 불가능하지만 방어적 코드) 기본값 사용
+                            final_note_number = *last_transpositions.get(&(track_idx, note.note_number)).unwrap_or(&note.note_number);
                         }
 
                         generated_notes.push(MidiNote {
@@ -327,12 +531,15 @@ impl RhythmEngine {
                     }
                 }
                 // 다음 마디 오프셋 이동
-                current_offset += pattern.length_ticks;
+                current_offset += scaled_length_ticks;
             }
         }
 
-        // 시퀀싱을 위해 생성된 노트를 틱 순서대로 정렬
-        generated_notes.sort_by_key(|n| n.tick);
+        // 시퀀싱을 위해 생성된 노트를 틱 순서대로 정렬하되, 
+        // 같은 틱일 경우 Note-Off(velocity=0)가 Note-On(velocity>0)보다 먼저 오도록 함
+        generated_notes.sort_by(|a, b| {
+            a.tick.cmp(&b.tick).then(a.velocity.cmp(&b.velocity))
+        });
         generated_notes
     }
 
