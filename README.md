@@ -1,30 +1,108 @@
-# MIMI (MIDI Engine for Interactive Music & Instrumentation)
+# MIMI Engine
 
-**MIMI**는 저지연(Low Latency) 오디오 합성, 정밀한 실시간 타이밍 제어, 그리고 동적 MIDI 이벤트 조작을 목표로 하는 고성능 미디 엔진 라이브러리입니다. `mimi_core`는 특히 노래방 애플리케이션과 같은 실시간 인터랙티브 음악 시스템에 최적화되어 있습니다.
+**MIMI** (MIDI Engine for Interactive Music & Instrumentation) - 실시간 MIDI 시퀀싱 및 오디오 합성 엔진
 
-## 주요 특징 (Key Features)
+## 개요
 
-- **저지연 오디오 합성**: `cpal`을 통한 크로스 플랫폼 오디오 스트리밍과 `oxisynth` 기반의 고성능 사운드폰트 신디사이저를 활용하여 실시간 인터랙션에 최적화된 빠른 응답 속도를 제공합니다.
-- **정밀한 실시간 MIDI 시퀀싱**: 샘플 단위의 정확한 MIDI 이벤트 처리 및 재생을 통해 미디 파일의 모든 뉘앙스를 재현합니다.
-- **동적 MIDI 이벤트 조작**: 재생 중 마스터 키(Key) 조옮김, 템포(Tempo) 비율 조정, 특정 틱(Tick) 위치로의 점프(Seek) 등 실시간으로 미디 이벤트를 조작할 수 있습니다.
-- **노래방 최적화 기능**: 가사 동기화 및 보컬 가이드 트랙 제어와 같은 노래방 애플리케이션에 특화된 이벤트를 UI로 전달하는 기능을 포함합니다.
-- **견고한 재생 상태 관리**: 재생(Play), 일시정지(Pause), 정지(Stop) 상태를 명확하게 관리하며, 음 걸림(Note Stuck) 방지 로직을 내장하고 있습니다.
-- **사운드폰트 지원**: 표준 SoundFont2(.sf2) 파일을 로드하여 다양한 악기 음색을 사용할 수 있습니다.
+MIMI는 저지연 오디오 합성과 정밀한 실시간 타이밍 제어를 목표로 하는 고성능 미디 엔진이다. 노래방 애플리케이션과 같은 실시간 인터랙티브 음악 시스템에 최적화되어 있으며, 샘플 단위의 정확한 MIDI 이벤트 처리를 지원한다.
 
-## 주요 구성 요소
+## 주요 기능
 
-- `MimiSequencer`: MIDI 파일 파싱 및 이벤트 시퀀싱을 담당합니다.
-- `Synth` (oxisynth): 로드된 사운드폰트를 기반으로 오디오를 합성합니다.
-- `MimiCommand`: 외부(예: UI)에서 엔진으로 재생 제어 명령(Play, Pause, Stop, SetKey, SetTempo, Seek)을 전달하는 데 사용됩니다.
-- `MimiEngineHandle`: MIMI 엔진을 제어하고 현재 상태를 조회하기 위한 인터페이스를 제공합니다.
-- `MidiEngineEvent`: 엔진 내부에서 발생하여 UI로 전달될 수 있는 이벤트(예: 가사, 리듬 변경 플래그)를 정의합니다.
+- **저지연 오디오 합성** - `fluidlite` 기반 사운드폰트 신디사이저, 듀얼 포트(Synth A/B) 동시 합성
+- **샘플 단위 시퀀싱** - 프레임별 틱 전진으로 MIDI 이벤트를 정밀하게 재현
+- **실시간 제어** - 재생 중 키 조옮김(Transpose), 템포 비율 조정, 틱 위치 점프(Seek)
+- **MIDI 규격 자동 감지** - SysEx 분석을 통한 GM / GS / XG 포맷 자동 판별 및 뱅크 매핑
+- **노래방 지원** - SMF 가사(Lyric/Text) 이벤트 파싱 및 UI 전달
+- **음 걸림 방지** - 키 변경, 일시정지, 정지 시 활성 노트 자동 해제
+- **채널 레벨 모니터링** - 포트별 16채널 velocity 추적 및 소프트 감쇠
 
-## 시작하기 (Getting Started)
+## 프로젝트 구조
 
-### 빌드 방법
-```bash
-cargo build --release
+```
+mimi_engine/
+├── mimi_core/          # 엔진 코어 라이브러리
+│   └── src/
+│       ├── lib.rs          # 엔진 메인 (합성, 명령 처리, CPAL 스트림)
+│       └── sequencer.rs    # MIDI 파서 및 시퀀서
+├── mimi_player/        # TUI 기반 레퍼런스 플레이어
+│   └── src/
+│       └── main.rs         # ratatui 기반 터미널 UI
+├── assets/             # MIDI 파일 및 사운드폰트
+│   └── soundfont.sf2
+└── Cargo.toml          # 워크스페이스 루트
 ```
 
-## 📄 라이선스 (License)
-Copyright © 2024 MIMI Project. All rights reserved.
+## 의존성
+
+| 크레이트 | 용도 |
+|---------|------|
+| `fluidlite` | SoundFont2 기반 소프트웨어 신디사이저 |
+| `midly` | MIDI(SMF) 파일 파싱 |
+| `cpal` | 크로스 플랫폼 오디오 출력 |
+| `crossbeam-channel` | 스레드 간 lock-free 명령/이벤트 채널 |
+| `ratatui` | 터미널 UI 프레임워크 (mimi_player) |
+| `crossterm` | 터미널 입력 처리 (mimi_player) |
+
+## 핵심 API
+
+### `spawn_mimi_engine(sf_path, midi_bytes) -> (MimiEngineHandle, Stream)`
+
+사운드폰트 경로와 MIDI 바이트 데이터를 받아 오디오 엔진을 구동한다. `MimiEngineHandle`과 CPAL `Stream`을 반환하며, Stream의 수명이 다하면 오디오가 중단되므로 상위 스코프에서 관리해야 한다.
+
+### `MimiEngineHandle`
+
+| 메서드 | 설명 |
+|-------|------|
+| `send_command(MimiCommand)` | Play, Pause, Stop, SetKey, SetTempo, Seek 명령 전송 |
+| `get_status()` | 현재 상태, 틱 위치, 경과 시간 조회 |
+| `get_state()` | 현재 PlayerState 반환 |
+| `ui_rx` | 가사, 채널 레벨, 틱 업데이트 등 UI 이벤트 수신 채널 |
+
+### `MimiCommand`
+
+```rust
+Play                // 재생 시작
+Pause               // 일시정지
+Stop                // 정지 및 초기화
+SetKey(i8)          // 조옮김 오프셋 설정
+SetTempo(f32)       // 템포 배율 (1.0 = 정속)
+Seek(u32)           // 특정 틱 위치로 점프
+```
+
+## 빌드 및 실행
+
+```bash
+# 빌드
+cargo build --release
+
+# TUI 플레이어 실행
+cargo run -p mimi_player --release
+```
+
+`assets/` 디렉토리에 `.mid` 파일과 `soundfont.sf2`를 배치한 후 플레이어를 실행한다.
+
+### 플레이어 조작키
+
+| 키 | 동작 |
+|---|------|
+| `↑` / `↓` | 파일 선택 |
+| `Enter` | 재생 |
+| `Space` | 재생 / 일시정지 토글 |
+| `s` | 정지 |
+| `,` / `.` | 키 내림 / 올림 |
+| `Esc` | 리스트로 복귀 |
+
+## 라이선스
+
+### 오픈소스 라이선스
+
+| 크레이트 | 라이선스 | 라이선스 사본 |
+|---------|---------|-------------|
+| `fluidlite` | LGPL-2.1 | [LICENSE](https://github.com/katyo/fluidlite/blob/master/LICENSE) |
+| `midly` | Unlicense | [LICENSE](https://github.com/kovaxis/midly/blob/master/LICENSE) |
+| `cpal` | Apache-2.0 | [LICENSE](https://github.com/RustAudio/cpal/blob/master/LICENSE) |
+| `crossbeam-channel` | MIT / Apache-2.0 | [MIT](https://github.com/crossbeam-rs/crossbeam/blob/master/LICENSE-MIT) / [Apache-2.0](https://github.com/crossbeam-rs/crossbeam/blob/master/LICENSE-APACHE) |
+| `ratatui` | MIT | [LICENSE](https://github.com/ratatui/ratatui/blob/main/LICENSE) |
+| `crossterm` | MIT | [LICENSE](https://github.com/crossterm-rs/crossterm/blob/master/LICENSE) |
+| `anyhow` | MIT / Apache-2.0 | [MIT](https://github.com/dtolnay/anyhow/blob/master/LICENSE-MIT) / [Apache-2.0](https://github.com/dtolnay/anyhow/blob/master/LICENSE-APACHE) |
+| `color-eyre` | MIT / Apache-2.0 | [MIT](https://github.com/eyre-rs/eyre/blob/master/LICENSE-MIT) / [Apache-2.0](https://github.com/eyre-rs/eyre/blob/master/LICENSE-APACHE) |

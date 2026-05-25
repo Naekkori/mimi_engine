@@ -1,11 +1,13 @@
 use cpal; // 오디오 스트림 타입을 인식하기 위해 cpal 크레이트 선언
 use color_eyre::eyre::eyre;
 use crossterm::event;
-use mimi_core::{MimiCommand, MimiEngineHandle, PlayerState};
+use mimi_core::{MimiCommand, MimiEngineHandle, MimiEngineStatus, PlayerState};
+use mimi_core::{KEY_MAX, KEY_MIN, TEMPO_MAX, TEMPO_MIN, VOLUME_MAX, VOLUME_MIN};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::{DefaultTerminal, Frame};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -26,10 +28,10 @@ struct App {
     
     // 재생 관련
     song_name: String,
-    player_state: PlayerState,
-    song_time: String,
     engine: Option<MimiEngineHandle>,
     _stream: Option<cpal::Stream>,
+    // 엔진에서 읽어온 최신 상태 (캐시)
+    engine_status: MimiEngineStatus,
 
     // 레벨미터
     channel_levels_a: [u8; 16],
@@ -44,8 +46,15 @@ impl App {
         Self {
             state: AppState::Browsing,
             song_name: String::new(),
-            player_state: PlayerState::Stopped,
-            song_time: String::new(),
+            engine_status: MimiEngineStatus {
+                state: PlayerState::Stopped,
+                current_tick: 0,
+                total_tick: 0,
+                current_time: std::time::Duration::from_secs(0),
+                tempo: 1.0,
+                key: 0,
+                volume: 50,
+            },
             file_list: Vec::new(),
             selected_index: 0,
             list_state: ListState::default(),
@@ -76,6 +85,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
 
     // 루트 assets 디렉토리 존재 확인
     if !std::path::Path::new(assets_path).exists() {
+        let _ = fs::create_dir(assets_path);
         return Err(eyre!("Assets 디렉토리를 찾을 수 없음: {}", assets_path));
     }
 
@@ -103,7 +113,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
     }
 
     let mut needs_redraw = true;
-    'main_loop: loop {
+    loop {
         if needs_redraw {
             terminal.draw(|f| render(f, &mut app))?;
             needs_redraw = false;
@@ -121,7 +131,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         Ok((handle, stream)) => {
                             app.engine = Some(handle);
                             app._stream = Some(stream);
-                            app.player_state = PlayerState::Playing;
+                            app.engine_status.state = PlayerState::Playing;
                             app.state = AppState::Playing;
                         }
                         Err(_) => app.state = AppState::Browsing,
@@ -203,16 +213,16 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     // 재생 제어
                     event::KeyCode::Char(' ') => {
                         if let Some(handle) = &app.engine {
-                            match app.player_state {
+                            match app.engine_status.state {
                                 PlayerState::Stopped | PlayerState::Paused => {
                                     if handle.send_command(MimiCommand::Play).is_ok() {
-                                        app.player_state = PlayerState::Playing;
+                                        app.engine_status.state = PlayerState::Playing;
                                         needs_redraw = true;
                                     }
                                 }
                                 PlayerState::Playing => {
                                     if handle.send_command(MimiCommand::Pause).is_ok() {
-                                        app.player_state = PlayerState::Paused;
+                                        app.engine_status.state = PlayerState::Paused;
                                         needs_redraw = true;
                                     }
                                 }
@@ -221,13 +231,78 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     }
                     event::KeyCode::Char('s') => {
                         if let Some(handle) = &app.engine {
-                            if app.player_state != PlayerState::Stopped {
+                            if app.engine_status.state != PlayerState::Stopped {
                                 if handle.send_command(MimiCommand::Stop).is_ok() {
-                                    app.player_state = PlayerState::Stopped;
+                                    app.engine_status.state = PlayerState::Stopped;
                                     needs_redraw = true;
                                 }
                             }
                         }
+                    }
+                    // 키(음정) 내림
+                    event::KeyCode::Char(',') => {
+                        if let Some(handle) = &app.engine {
+                            let new_key = (app.engine_status.key - 1).max(KEY_MIN);
+                            handle.send_command(MimiCommand::SetKey(new_key)).ok();
+                        }
+                        needs_redraw = true;
+                    }
+                    // 키(음정) 올림
+                    event::KeyCode::Char('.') => {
+                        if let Some(handle) = &app.engine {
+                            let new_key = (app.engine_status.key + 1).min(KEY_MAX);
+                            handle.send_command(MimiCommand::SetKey(new_key)).ok();
+                        }
+                        needs_redraw = true;
+                    }
+                    // 템포 내림
+                    event::KeyCode::Char('[') => {
+                        if let Some(handle) = &app.engine {
+                            let new_tempo = (app.engine_status.tempo - 0.1).max(TEMPO_MIN);
+                            handle.send_command(MimiCommand::SetTempo(new_tempo)).ok();
+                        }
+                        needs_redraw = true;
+                    }
+                    // 템포 올림
+                    event::KeyCode::Char(']') => {
+                        if let Some(handle) = &app.engine {
+                            let new_tempo = (app.engine_status.tempo + 0.1).min(TEMPO_MAX);
+                            handle.send_command(MimiCommand::SetTempo(new_tempo)).ok();
+                        }
+                        needs_redraw = true;
+                    }
+                    // 볼륨 내림
+                    event::KeyCode::Char('-') => {
+                        if let Some(handle) = &app.engine {
+                            let new_vol = app.engine_status.volume.saturating_sub(5).max(VOLUME_MIN);
+                            handle.send_command(MimiCommand::SetVolume(new_vol)).ok();
+                        }
+                        needs_redraw = true;
+                    }
+                    // 볼륨 올림
+                    event::KeyCode::Char('=') => {
+                        if let Some(handle) = &app.engine {
+                            let new_vol = app.engine_status.volume.saturating_add(5).min(VOLUME_MAX);
+                            handle.send_command(MimiCommand::SetVolume(new_vol)).ok();
+                        }
+                        needs_redraw = true;
+                    }
+                    // 이동(Seek) <- / ->
+                    event::KeyCode::Left => {
+                        if let Some(handle) = &app.engine {
+                            if app.engine_status.current_tick > 0 {
+                                handle.send_command(MimiCommand::Seek((app.engine_status.current_tick - 100).try_into().unwrap())).ok();
+                            }
+                        }
+                        needs_redraw = true;
+                    }
+                    event::KeyCode::Right => {
+                        if let Some(handle) = &app.engine {
+                            if app.engine_status.current_tick < app.engine_status.total_tick {
+                                handle.send_command(MimiCommand::Seek((app.engine_status.current_tick + 100).try_into().unwrap())).ok();
+                            }
+                        }
+                        needs_redraw = true;
                     }
                     // 리스트로 돌아가기 (선택 바 초기화 등은 안함)
                     event::KeyCode::Esc => {
@@ -237,12 +312,10 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         app.engine = None;
                         app._stream = None;
                         app.song_name = "Ready.".to_string();
-                        app.player_state = PlayerState::Stopped;
+                        app.engine_status.state = PlayerState::Stopped;
                         app.state = AppState::Browsing;
-                        app.song_time = String::new();
                         needs_redraw = true;
                     }
-                    event::KeyCode::Char('q') => break 'main_loop,
                     _ => {}
                 }
             }
@@ -251,22 +324,13 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
         // 엔진 상태 업데이트
         if let Some(handle) = &app.engine {
             if let Ok(status) = handle.get_status() {
-                if app.player_state != status.state {
-                    app.player_state = status.state;
-                    needs_redraw = true;
-                }
-
-                let seconds = status.current_time.as_secs();
-                let new_time_str = format!(
-                    "{:02}:{:02} ({:>5} / {:>5} tick)",
-                    seconds / 60,
-                    seconds % 60,
-                    status.current_tick,
-                    status.total_tick
-                );
-
-                if app.song_time != new_time_str {
-                    app.song_time = new_time_str;
+                let changed = app.engine_status.state != status.state
+                    || app.engine_status.current_tick != status.current_tick
+                    || app.engine_status.tempo != status.tempo
+                    || app.engine_status.key != status.key
+                    || app.engine_status.volume != status.volume;
+                app.engine_status = status;
+                if changed {
                     needs_redraw = true;
                 }
             }
@@ -294,16 +358,14 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
         }
 
     }
-    Ok(())
 }
 
 fn render(frame: &mut Frame, app: &mut App) {
     let version = env!("CARGO_PKG_VERSION");
     let block = Block::bordered()
         .title_top(Line::from(format!("MIMI PLAYER - {}", version)).centered())
-        .title_bottom("↑/↓: Select | Enter: Play | Esc: Back")
-        .title_bottom("<space>: Play/Pause | <s>: Stop")
-        .title_bottom("<q> to Exit");
+        .title_bottom("↑/↓: Select | Enter: Play | ")
+        .title_bottom("Esc: Back | <space>: Play/Pause | <s>: Stop | ,/.: Transpose | [/]: Tempo | ←/→: Seek | -/=: Volume");
 
     let area = frame.area();
 
@@ -337,9 +399,9 @@ fn render(frame: &mut Frame, app: &mut App) {
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Min(1),
+                Constraint::Length(3), // 재생 정보 영역
+                Constraint::Min(1),    // 레벨 미터 영역
+                Constraint::Length(3), // 음악 진행바 영역
             ])
             .split(block.inner(area));
 
@@ -350,15 +412,31 @@ fn render(frame: &mut Frame, app: &mut App) {
                 Span::raw("Now Playing: "),
                 Span::styled(&app.song_name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             ]),
-            Line::from(format!("State: {:?}  |  Time: {}", app.player_state, app.song_time)),
-            Line::from(Span::styled("MIMI (MIDI Engine for Interactive Music & Instrumentation)", Style::default().fg(Color::Gray)))
+            Line::from({
+                let s = &app.engine_status;
+                let seconds = s.current_time.as_secs();
+                format!(
+                    "State: {:?}  |  Time: {:02}:{:02} ({:>5} / {:>5} tick)",
+                    s.state,
+                    seconds / 60,
+                    seconds % 60,
+                    s.current_tick,
+                    s.total_tick
+                )
+            }),
+            Line::from(format!(
+                "Transpose: {} | Tempo: {:.1} | Volume: {}",
+                app.engine_status.key,
+                app.engine_status.tempo,
+                app.engine_status.volume
+            )),
         ];
         frame.render_widget(Paragraph::new(info_text), outer[0]);
 
         let meter_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(outer[2]);
+            .split(outer[1]);
 
         for (port_idx, (meter_area, levels)) in [
             (meter_layout[0], app.channel_levels_a),
@@ -427,6 +505,15 @@ fn render(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
+        //음악 진행바
+        let progress = app.engine_status.current_tick as f64 / app.engine_status.total_tick as f64;
+        frame.render_widget(
+            Gauge::default()
+                .block(Block::bordered().title("Seek Bar".bold()))
+                .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
+                .ratio(progress),
+            outer[2],
+        );
     }
         AppState::Loading(progress) => {
             // 로딩 화면 및 로딩 바

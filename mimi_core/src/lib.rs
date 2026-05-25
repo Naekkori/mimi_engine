@@ -4,17 +4,31 @@ mod sequencer;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use fluidlite::{IsSettings, IsSamples, Settings, Synth};
+use midly::{TrackEvent, TrackEventKind};
 pub use sequencer::{MidiEngineEvent, MidiFormat, MimiSequencer};
-use std::sync::{Arc, Mutex};
+use std::{collections::btree_map::Values, sync::{Arc, Mutex}};
+
+// 템포 배율 제한 (0.2 ~ 5.0)
+pub const TEMPO_MIN: f32 = 0.2;
+pub const TEMPO_MAX: f32 = 5.0;
+
+// 조옮김 반음 제한 (-15 ~ +15)
+pub const KEY_MIN: i8 = -15;
+pub const KEY_MAX: i8 = 15;
+
+// 마스터 볼륨 제한 (0 ~ 100)
+pub const VOLUME_MIN: u8 = 0;
+pub const VOLUME_MAX: u8 = 100;
 
 /// 외부(UI 등)에서 오디오 엔진으로 보낼 제어 명령
 pub enum MimiCommand {
     Play,
     Pause,
     Stop,
-    SetKey(i8),    // 조옮김 오프셋 (-6 ~ +6 등)
-    SetTempo(f32), // 템포 비율 (1.0 = 정속, 1.2 = 배속)
-    Seek(u32),     // 특정 절대 틱(Tick) 위치로 점프
+    SetKey(i8),     // 조옮김 오프셋 (KEY_MIN ~ KEY_MAX)
+    SetTempo(f32),  // 템포 비율 (TEMPO_MIN ~ TEMPO_MAX)
+    SetVolume(u8),  // 마스터 볼륨 (VOLUME_MIN ~ VOLUME_MAX)
+    Seek(u32),      // 특정 절대 틱(Tick) 위치로 점프
 }
 
 /// 오디오 엔진의 현재 내부 상태
@@ -32,6 +46,10 @@ pub struct MimiEngineStatus {
     pub current_tick: u64,
     pub total_tick: u64,
     pub current_time: std::time::Duration,
+    // 현재 파라미터 값 (엔진이 권위 있는 값을 보유)
+    pub tempo: f32,
+    pub key: i8,
+    pub volume: u8,
 }
 
 /// 외부 제어용 인터페이스 핸들
@@ -76,6 +94,7 @@ struct AudioPlaybackContext {
     current_state: PlayerState,
     master_key: i8,
     tempo_scale: f32,
+    master_volume: u8, // 마스터 볼륨 (VOLUME_MIN ~ VOLUME_MAX)
     sample_rate: f64,
     active_notes: Vec<(u8, u8, u8)>,
     elapsed_time_sec: f64,
@@ -116,15 +135,101 @@ impl AudioPlaybackContext {
                 MimiCommand::SetKey(key) => {
                     // 키 변경 시 음걸림 예방을 위해 기존 소리 끄기
                     self.all_notes_off();
-                    self.master_key = key;
+                    self.master_key = key.clamp(KEY_MIN, KEY_MAX);
+                    self.status.lock().unwrap().key = self.master_key;
                 }
                 MimiCommand::SetTempo(tempo) => {
-                    self.tempo_scale = tempo;
+                    self.tempo_scale = tempo.clamp(TEMPO_MIN, TEMPO_MAX);
+                    self.status.lock().unwrap().tempo = self.tempo_scale;
+                }
+                MimiCommand::SetVolume(vol) => {
+                    self.master_volume = vol.clamp(VOLUME_MIN, VOLUME_MAX);
+                    // fluidlite gain: 0.0 ~ 10.0 범위, 100 -> 1.0 (기본값)으로 매핑
+                    let gain = self.master_volume as f32 / 100.0 * 2.0;
+                    self.synth_a.set_gain(gain);
+                    self.synth_b.set_gain(gain);
+                    self.status.lock().unwrap().volume = self.master_volume;
                 }
                 MimiCommand::Seek(tick) => {
                     self.all_notes_off();
-                    self.sequencer.current_tick = tick as f64;
-                    // 필요한 경우 이벤트 인덱스 역정렬/재탐색 로직 추가 가능
+                    
+                    // 신디사이저 리셋
+                    let _ = self.synth_a.system_reset();
+                    let _ = self.synth_b.system_reset();
+
+                    // 내부상태 초기화
+                    self.bank_msb = [[0u8; 16]; 2];
+                    self.bank_lsb = [[0u8; 16]; 2];
+                    self.drum_channels = [[false; 16]; 2];
+                    self.drum_channels[0][9] = true;
+                    self.drum_channels[1][9] = true;
+                    self.midi_format = self.sequencer.format;
+
+                    // 시퀀서 위치 이동 (인덱스 + 템포복원)
+                    self.sequencer.seek_to(tick);
+
+                    // Seek 지점 이전 이벤트 중 상태성 이벤트만 신디사이저에 재적용
+                    for i in 0..self.sequencer.current_event_index {
+                        let event = &self.sequencer.event[i];
+                        match &event.inner {
+                            MidiEngineEvent::MidiPlay { port, channel, is_drum_channel, kind } => {
+                                let p = port.min(&1);
+                                let synth = if *p == 0 {
+                                    &mut self.synth_a
+                                }else{
+                                    &mut self.synth_b
+                                };
+                                let ch = *channel as u32;
+                                if let TrackEventKind::Midi {message,.. } = kind {
+                                    match message {
+                                        midly::MidiMessage::Controller { controller, value }=>{
+                                            let cc = controller.as_int();
+                                            let val = value.as_int();
+                                            match cc{
+                                                0 => self.bank_msb[*p as usize][*channel as usize] = val,
+                                                32 => self.bank_lsb[*p as usize][*channel as usize] = val,
+                                                _ => {
+                                                    let _ = synth.cc(ch, cc as u32, val as u32);
+                                                }
+                                            }
+                                        }
+                                        midly::MidiMessage::ProgramChange { program } =>{
+                                            // 기존 ProgramChange 처리 로직과 동일
+                                            let pi = *p as usize;
+                                            let ci = *channel as usize;
+                                            let msb = self.bank_msb[pi][ci];
+                                            let lsb = self.bank_lsb[pi][ci];
+                                            let prog = program.as_int() as u32;
+                                            let is_drum = self.drum_channels[pi][ci];
+                                            let resolved_bank: u32 = match self.midi_format {
+                                                MidiFormat::GM => 0,
+                                                MidiFormat::GS => if is_drum { (msb as u32) << 7 } else {0},
+                                                MidiFormat::XG => 0,
+                                            };
+                                            let _ = synth.cc(ch, 0, resolved_bank >> 7);
+                                            let _ = synth.cc(ch, 32, lsb as u32);
+                                            let _ = synth.program_change(ch, prog);
+                                        }
+                                        midly::MidiMessage::PitchBend { bend } =>{
+                                            let value = (bend.as_int() as i32 + 8192).clamp(0, 16383) as u32;
+                                            let _ = synth.pitch_bend(ch, value);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            MidiEngineEvent::SetDrumChannel { port, channel, is_drum } => {
+                                let p = port.min(&1);
+                                self.drum_channels[*p as usize][*channel.min(&15) as usize] = *is_drum;
+                            }
+                            _ => {}
+                        }
+                    }
+                    
+                    // 볼륨 게인 재적용
+                    let gain = self.master_volume as f32 / 100.0 * 2.0;
+                    self.synth_a.set_gain(gain);
+                    self.synth_b.set_gain(gain);
                 }
             }
         }
@@ -209,13 +314,14 @@ impl AudioPlaybackContext {
                         port,
                         channel,
                         kind,
-                        is_drum_channel,
+                        is_drum_channel: _,
                     } => {
                         // 포트 범위 보호 (0 또는 1만 유효)
                         let port = port.min(1);
                         let target_channel = channel as u32;
                         // 포트에 해당되는 synth 지정
                         let synth = if port == 0 { &self.synth_a } else { &self.synth_b };
+                        let is_drum_ch = self.drum_channels[port as usize][channel as usize];
 
                         if let midly::TrackEventKind::Midi { message, .. } = kind {
                             match message {
@@ -224,7 +330,7 @@ impl AudioPlaybackContext {
                                     let vel = vel.as_int();
 
                                     if vel > 0 {
-                                        let final_key = if is_drum_channel {
+                                        let final_key = if is_drum_ch {
                                             raw_key
                                         } else {
                                             (raw_key as i8 + self.master_key).clamp(0, 127) as u8
@@ -239,7 +345,7 @@ impl AudioPlaybackContext {
                                         self.active_notes.push((port, channel, final_key));
                                         let _ = synth.note_on(target_channel, final_key as u32, vel as u32);
                                     } else {
-                                        let final_key = if is_drum_channel {
+                                        let final_key = if is_drum_ch {
                                             raw_key
                                         } else {
                                             (raw_key as i8 + self.master_key).clamp(0, 127) as u8
@@ -252,7 +358,7 @@ impl AudioPlaybackContext {
                                 }
                                 midly::MidiMessage::NoteOff { key, .. } => {
                                     let raw_key = key.as_int();
-                                    let final_key = if is_drum_channel {
+                                    let final_key = if is_drum_ch {
                                         raw_key
                                     } else {
                                         (raw_key as i8 + self.master_key).clamp(0, 127) as u8
@@ -319,6 +425,11 @@ impl AudioPlaybackContext {
                                 _ => {}
                             }
                         }
+                    }
+                    MidiEngineEvent::SetDrumChannel { port, channel, is_drum } => {
+                        let port = port.min(1) as usize;
+                        let channel = channel.min(15) as usize;
+                        self.drum_channels[port][channel] = is_drum;
                     }
                     other_event => {
                         let _ = self.ui_tx.send(other_event);
@@ -405,6 +516,9 @@ pub fn spawn_mimi_engine(
         current_tick: 0,
         total_tick: 0,
         current_time: std::time::Duration::from_secs(0),
+        tempo: 1.0,
+        key: 0,
+        volume: 50,
     }));
     let status_clone = Arc::clone(&player_status);
 
@@ -439,6 +553,9 @@ pub fn spawn_mimi_engine(
     synth_a.sfload(sf_path, true)
         .map_err(|e| anyhow::anyhow!("사운드폰트 A 로드 실패: {:?}", e))?;
 
+    // 초기 볼륨에 따른 기본 게인 설정 (소리 확 튀는 현상 방지)
+    synth_a.set_gain(1.0);
+
     let settings_b = Settings::new()
         .map_err(|e| anyhow::anyhow!("FluidLite Settings B 생성 실패: {:?}", e))?;
 
@@ -451,6 +568,9 @@ pub fn spawn_mimi_engine(
 
     synth_b.sfload(sf_path, true)
         .map_err(|e| anyhow::anyhow!("사운드폰트 B 로드 실패: {:?}", e))?;
+
+    // 초기 볼륨에 따른 기본 게인 설정 (소리 확 튀는 현상 방지)
+    synth_b.set_gain(1.0);
 
     // 3. 시퀀서 준비
     let sequencer = MimiSequencer::from_byte(&midi_bytes)?;
@@ -469,6 +589,7 @@ pub fn spawn_mimi_engine(
         current_state: PlayerState::Stopped,
         master_key: 0,
         tempo_scale: 1.0,
+        master_volume: 50,
         sample_rate,
         active_notes: Vec::new(),
         elapsed_time_sec: 0.0,

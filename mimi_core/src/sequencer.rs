@@ -33,6 +33,12 @@ pub enum MidiEngineEvent {
         port: u8,
         levels: [u8; 16],
     },
+    // 드럼 채널 설정 변경
+    SetDrumChannel {
+        port: u8,
+        channel: u8,
+        is_drum: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -118,7 +124,7 @@ impl MimiSequencer {
                             inner: MidiEngineEvent::TempoChange { tempo: tempo.as_int() },
                         });
                     }
-                    //SysEx를 통한 시스템 리셋 감지
+                    //SysEx를 통한 시스템 리셋 및 드럼 채널 변경 감지
                     TrackEventKind::SysEx(data)=>{
                         let is_gm_reset = data.len() >= 5
                             && data[0] == 0x7E && data[2] == 0x09;
@@ -146,6 +152,59 @@ impl MimiSequencer {
                                 absolute_tick: accum_tick,
                                 priority: 0,
                                 inner: MidiEngineEvent::MidiReset,
+                            });
+                        }
+
+                        // Roland GS Rhythm Part Assign
+                        // F0 41 <device_id> 42 12 40 1x 15 <value> <checksum> F7
+                        // F0, F7 제거된 data 바이트 기준
+                        if data.len() >= 9
+                            && data[0] == 0x41
+                            && data[2] == 0x42
+                            && data[3] == 0x12
+                            && data[4] == 0x40
+                            && (data[5] & 0xF0) == 0x10
+                            && data[6] == 0x15
+                        {
+                            let part = data[5] & 0x0F;
+                            let ch = match part {
+                                0 => 9,                         // Part 10 -> Ch 10 (0-based 9)
+                                p if p >= 1 && p <= 9 => p - 1, // Part 1~9 -> Ch 1~9 (0-based 0~8)
+                                p if p >= 10 && p <= 15 => p,  // Part 11~16 -> Ch 11~16 (0-based 10~15)
+                                _ => 9,
+                            };
+                            let is_drum = data[7] == 1 || data[7] == 2;
+                            all_events.push(SequenceEvent {
+                                absolute_tick: accum_tick,
+                                priority: 0,
+                                inner: MidiEngineEvent::SetDrumChannel {
+                                    port: current_port,
+                                    channel: ch,
+                                    is_drum,
+                                },
+                            });
+                        }
+
+                        // Yamaha XG Part Mode (Rhythm Part Assign)
+                        // F0 43 <device_id> 4C 08 1x 0E <value> F7
+                        // F0, F7 제거된 data 바이트 기준
+                        if data.len() >= 7
+                            && data[0] == 0x43
+                            && data[2] == 0x4C
+                            && data[3] == 0x08
+                            && (data[4] & 0xF0) == 0x10
+                            && data[5] == 0x0E
+                        {
+                            let part = data[4] & 0x0F;
+                            let is_drum = data[6] >= 1;
+                            all_events.push(SequenceEvent {
+                                absolute_tick: accum_tick,
+                                priority: 0,
+                                inner: MidiEngineEvent::SetDrumChannel {
+                                    port: current_port,
+                                    channel: part,
+                                    is_drum,
+                                },
                             });
                         }
                     }
@@ -225,4 +284,25 @@ impl MimiSequencer {
         // current_tick 조건보다 index 조건이 더 확실한 종료 신호임
         self.current_event_index >= self.event.len()
     }
+
+    // 지정된 틱 위치 이후 첫 이벤트 인덱스를 반환 
+    pub fn find_next_event_index(&self, tick: u32) -> usize {
+        self.event.partition_point(|e| e.absolute_tick < tick)
+    }
+
+    // 지정된 틱 위치로 점프하고, 해당 지점까지 템포 를 복원
+    pub fn seek_to(&mut self, tick: u32) {
+        self.current_tick = tick as f64;
+        self.current_event_index = self.find_next_event_index(tick);
+
+        // 틱 이전의 마지막 템포 이벤트를 찿아서 복원
+        let mut last_tempo = 500_000.0;
+        for i in 0..self.current_event_index {
+            if let MidiEngineEvent::TempoChange { tempo } = &self.event[i].inner {
+                last_tempo = *tempo as f64;
+            }
+        }
+        self.microseconds_per_tick = last_tempo / self.ppq as f64;
+    }
+    
 }

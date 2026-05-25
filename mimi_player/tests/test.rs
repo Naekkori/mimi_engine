@@ -1,7 +1,6 @@
 use mimi_core::{spawn_mimi_engine, MimiCommand};
 use std::thread;
 use std::time::Duration;
-use anyhow::Error;
 
 #[test]
 fn engine_test() -> Result<(), anyhow::Error> {
