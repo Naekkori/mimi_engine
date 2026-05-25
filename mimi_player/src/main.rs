@@ -291,7 +291,10 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     event::KeyCode::Left => {
                         if let Some(handle) = &app.engine {
                             if app.engine_status.current_tick > 0 {
-                                handle.send_command(MimiCommand::Seek((app.engine_status.current_tick - 100).try_into().unwrap())).ok();
+                                let target_tick = app.engine_status.current_tick.saturating_sub(100);
+                                if handle.send_command(MimiCommand::Seek(target_tick as u32)).is_ok() {
+                                    app.engine_status.current_tick = target_tick;
+                                }
                             }
                         }
                         needs_redraw = true;
@@ -299,7 +302,10 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     event::KeyCode::Right => {
                         if let Some(handle) = &app.engine {
                             if app.engine_status.current_tick < app.engine_status.total_tick {
-                                handle.send_command(MimiCommand::Seek((app.engine_status.current_tick + 100).try_into().unwrap())).ok();
+                                let target_tick = (app.engine_status.current_tick + 100).min(app.engine_status.total_tick);
+                                if handle.send_command(MimiCommand::Seek(target_tick as u32)).is_ok() {
+                                    app.engine_status.current_tick = target_tick;
+                                }
                             }
                         }
                         needs_redraw = true;

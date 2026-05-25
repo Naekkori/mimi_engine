@@ -226,6 +226,15 @@ impl AudioPlaybackContext {
                         }
                     }
                     
+                    // 일시정지 상태에서도 Seek 업데이트 UI 에 갱신
+                    {
+                        let mut status = self.status.lock().unwrap();
+                        status.current_tick = tick as u64;
+                        let elapsed_sec = (tick as f64) * self.sequencer.microseconds_per_tick / 1_000_000.0;
+                        status.current_time = std::time::Duration::from_secs_f64(elapsed_sec);
+                    }
+                    let elapsed_sec = (tick as f64) * self.sequencer.microseconds_per_tick / 1_000_000.0;
+                    self.elapsed_time_sec = elapsed_sec;
                     // 볼륨 게인 재적용
                     let gain = self.master_volume as f32 / 100.0 * 2.0;
                     self.synth_a.set_gain(gain);
