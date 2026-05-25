@@ -55,6 +55,8 @@ pub struct MimiEngineStatus {
     pub key: i8,
     pub volume: u8,
     pub current_rhythm: Rhythm,
+    // 해당 곡에서 코드 진행 추출용 $BS(또는 베이스 라인)이 실제로 검출되었는지 여부
+    pub is_bs_detected: bool,
 }
 
 /// 외부 제어용 인터페이스 핸들
@@ -384,6 +386,8 @@ impl AudioPlaybackContext {
 
                     if let Ok(new_seq) = MimiSequencer::from_byte(&bytes) {
                         self.midi_format = new_seq.format;
+                        // $BS 메타 트랙 존재 유무 식별
+                        let bs_detected = new_seq.is_bs_track_detected;
                         self.sequencer = new_seq;
                         
                         let mut status = self.status.lock().unwrap();
@@ -391,6 +395,7 @@ impl AudioPlaybackContext {
                         status.current_tick = 0;
                         status.total_tick = self.sequencer.total_ticks as u64;
                         status.current_time = std::time::Duration::from_secs(0);
+                        status.is_bs_detected = bs_detected;
                     }
                     
                     // 신규 곡의 음량 게인 강제 재조정
@@ -773,6 +778,16 @@ impl AudioPlaybackContext {
             // [리듬 개입] 생성해 놓은 엇박 리듬 노트들을 현재 진행 틱에 맞춰 분출
             if self.rhythm_engine.current_rhythm != Rhythm::Original {
                 let current_tick = self.sequencer.current_tick as u32;
+                
+                // 디버깅 목적으로 현재 지점(Tick)에 매칭되는 BsChordEvent 정보를 가져와서 
+                // ChordUpdate 이벤트를 UI 버스 채널로 실시간 송출
+                if let Some(chord) = self.rhythm_engine.get_chord_at_tick(current_tick, &self.sequencer.chord_timeline) {
+                    let _ = self.ui_tx.send(MidiEngineEvent::ChordUpdate {
+                        root_pitch: chord.root_pitch,
+                        is_minor: chord.is_minor,
+                    });
+                }
+
                 while self.next_rhythm_note_index < self.generated_rhythm_notes.len() {
                     let note = &self.generated_rhythm_notes[self.next_rhythm_note_index];
                     if note.tick <= current_tick {
@@ -921,6 +936,7 @@ pub fn spawn_mimi_engine(
         key: 0,
         volume: 50,
         current_rhythm: Rhythm::Original,
+        is_bs_detected: false,
     }));
     let status_clone = Arc::clone(&player_status);
 

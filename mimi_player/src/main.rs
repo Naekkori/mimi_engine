@@ -46,6 +46,9 @@ struct App {
     channel_levels_a: [u8; 16],
     channel_levels_b: [u8; 16],
 
+    // 실시간 디버그용 코드 네임 문자열
+    current_chord_name: String,
+
     // 비동기 로딩용 채널
     loading_rx: Option<mpsc::Receiver<LoadingEvent>>,
 
@@ -67,6 +70,7 @@ impl App {
                 key: 0,
                 volume: 50,
                 current_rhythm: Rhythm::Original,
+                is_bs_detected: false,
             },
             file_list: Vec::new(),
             selected_index: 0,
@@ -75,6 +79,7 @@ impl App {
             _stream: None,
             channel_levels_a: [0u8; 16],
             channel_levels_b: [0u8; 16],
+            current_chord_name: "Original (None)".to_string(),
             loading_rx: None,
             seek_bar_rect: ratatui::layout::Rect::default(),
         }
@@ -440,7 +445,8 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     || app.engine_status.current_tick != status.current_tick
                     || app.engine_status.tempo != status.tempo
                     || app.engine_status.key != status.key
-                    || app.engine_status.volume != status.volume;
+                    || app.engine_status.volume != status.volume
+                    || app.engine_status.is_bs_detected != status.is_bs_detected;
                 app.engine_status = status;
                 if changed {
                     needs_redraw = true;
@@ -463,6 +469,29 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             app.channel_levels_b = levels;
                         }
                         needs_redraw = true;
+                    }
+                    mimi_core::MidiEngineEvent::ChordUpdate { root_pitch, is_minor } => {
+                        let root_str = match root_pitch {
+                            0 => "C",
+                            1 => "C#",
+                            2 => "D",
+                            3 => "D#",
+                            4 => "E",
+                            5 => "F",
+                            6 => "F#",
+                            7 => "G",
+                            8 => "G#",
+                            9 => "A",
+                            10 => "A#",
+                            11 => "B",
+                            _ => "?",
+                        };
+                        let m_str = if is_minor { "m" } else { "" };
+                        let new_chord = format!("{}{}", root_str, m_str);
+                        if app.current_chord_name != new_chord {
+                            app.current_chord_name = new_chord;
+                            needs_redraw = true;
+                        }
                     }
                     _ => {}
                 }
@@ -552,6 +581,28 @@ fn render(frame: &mut Frame, app: &mut App) {
                         },
                         Style::default()
                             .fg(if app.engine_status.current_rhythm == Rhythm::Original { Color::DarkGray } else { Color::Green })
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("   |   Current Chord: "),
+                    Span::styled(
+                        if app.engine_status.current_rhythm == Rhythm::Original {
+                            "Original Track (Off)"
+                        } else {
+                            &app.current_chord_name
+                        },
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("   |   BS Track: "),
+                    Span::styled(
+                        if app.engine_status.is_bs_detected {
+                            "YES"
+                        } else {
+                            "NO"
+                        },
+                        Style::default()
+                            .fg(if app.engine_status.is_bs_detected { Color::Green } else { Color::Red })
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]),

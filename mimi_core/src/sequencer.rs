@@ -40,6 +40,11 @@ pub enum MidiEngineEvent {
         channel: u8,
         is_drum: bool,
     },
+    // 엔진에 의해 분석되고 적용 중인 실시간 코드 상태 정보 전송 (디버그용 UI 브리징)
+    ChordUpdate {
+        root_pitch: u8, // C=0, C#=1 ... B=11
+        is_minor: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +67,8 @@ pub struct MimiSequencer {
     pub chord_timeline: Vec<BsChordEvent>,
     // 멜로디(가이드) 채널 (포트번호, 채널번호) 목록
     pub melody_channels: Vec<(u8, u8)>,
+    // 실제 미디 파일 트랙에서 $BS (또는 bass 명시 트랙)이 감지되었는지 여부
+    pub is_bs_track_detected: bool,
 }
 
 impl MimiSequencer {
@@ -76,6 +83,7 @@ impl MimiSequencer {
             format: MidiFormat::GM,
             chord_timeline: Vec::new(),
             melody_channels: Vec::new(),
+            is_bs_track_detected: false,
         }
     }
 
@@ -99,11 +107,59 @@ impl MimiSequencer {
         melody_channels.push((0, 0)); // Ch 0
         melody_channels.push((0, 3)); // Ch 3 (0-based)
 
+        // 미디 파일 전체 멀티트랙들을 로드해서 파싱 연주 루프에 돌입하기 전,
+        // 전체 트랙 헤더 메타 영역을 1차 선제 탐색하여 트랙명이 "$BS" 또는 "bass"인 트랙들의 
+        // 물리적인 실제 트랙 인덱스 목록을 사전 확보한다.
+        // 이것으로 $BS 포트 수집 오차 및 타이밍 전단 엇갈림 오탐을 완벽 봉쇄한다.
+        let mut bs_track_indices = Vec::new();
+        for (track_idx, track) in smf.tracks.iter().enumerate() {
+            for event in track.iter() {
+                // 트랙의 델타타임 누적과 무관하게 맨 앞 트랙이름 메타데이터만 1회성 스캔
+                if let midly::TrackEventKind::Meta(midly::MetaMessage::TrackName(bytes)) = &event.kind {
+                    let decoded_str = String::from_utf8_lossy(bytes).to_lowercase();
+                    let name_bytes = *bytes;
+                    
+                    let mut has_bs_tag = decoded_str.contains("bass") || decoded_str.contains("$bs");
+                    
+                    // CP949 깨짐 노이즈 대비 바이트 스캔
+                    if !has_bs_tag && name_bytes.len() >= 2 {
+                        for i in 0..=(name_bytes.len() - 2) {
+                            let b1 = name_bytes[i].to_ascii_lowercase();
+                            let b2 = name_bytes[i+1].to_ascii_lowercase();
+                            if b1 == b'b' && b2 == b's' {
+                                has_bs_tag = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !has_bs_tag && name_bytes.len() >= 4 {
+                        for i in 0..=(name_bytes.len() - 4) {
+                            let b1 = name_bytes[i].to_ascii_lowercase();
+                            let b2 = name_bytes[i+1].to_ascii_lowercase();
+                            let b3 = name_bytes[i+2].to_ascii_lowercase();
+                            let b4 = name_bytes[i+3].to_ascii_lowercase();
+                            if b1 == b'b' && b2 == b'a' && b3 == b's' && b4 == b's' {
+                                has_bs_tag = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if has_bs_tag {
+                        bs_track_indices.push(track_idx);
+                        break;
+                    }
+                }
+            }
+        }
+
         // 멀티트랙 미디파일을 단일절대 틱 타임라인으로 병합
-        for (_track_idx, track) in smf.tracks.iter().enumerate() {
+        let is_bs_track_detected = !bs_track_indices.is_empty();
+
+        for (track_idx, track) in smf.tracks.iter().enumerate() {
             let mut accum_tick = 0u32;
             let mut current_port = 0u8;
-            let mut is_bass_track = false;
+            let is_bass_track = bs_track_indices.contains(&track_idx);
             let mut track_bass_notes: Vec<(u32, u8)> = Vec::new();
 
             // Domnino 화면에 나온 반주기 물리 포트 매핑 분석 적용:
@@ -117,15 +173,9 @@ impl MimiSequencer {
 
                 match &kind {
                     TrackEventKind::Meta(midly::MetaMessage::TrackName(bytes)) => {
-                        let name_str = String::from_utf8_lossy(bytes).to_lowercase();
-                        // 트랙명에서 멜로디 속성 감지 시 멜로디 채널 자동 등록
-                        if name_str.contains("melody") || name_str.contains("vocal") || name_str.contains("guide") {
+                        let decoded_str = String::from_utf8_lossy(bytes).to_lowercase();
+                        if decoded_str.contains("melody") || decoded_str.contains("vocal") || decoded_str.contains("guide") {
                             // 기본 보컬 멜로디 가이드라인 채널 매칭
-                        }
-                        // TJ/KY 노래방 반주기 특수 포맷 트랙명 검출:
-                        // $BS (Bass), $GS (Guide Melody), $RS (Rhythm Section), $FS (Fill-in), $MW (Melody Wave) 등
-                        if name_str.contains("bass") || name_str.contains("$bs") {
-                            is_bass_track = true;
                         }
                     }
                     TrackEventKind::Meta(midly::MetaMessage::MidiPort(port)) => {
@@ -156,11 +206,15 @@ impl MimiSequencer {
                         };
 
                         // [중요] 노래방 반주기 전용 포트 감지 필터 수정:
-                        // Domino 스크린샷 판결 결과: 
-                        // - Conductor(지휘자/구간템포 포트), $GS, $BS, $RS, $FS 등이 "Port P"로 송출되고 있음.
-                        // - 미디 파일 편집기에서 "Port P"는 15번 포트(0-based 15 = 16번째 포트, M110 등) 또는 특정 포트 채널을 지칭함.
-                        // - 따라서 is_bass_track(트랙명이 $BS인 경우) 이거나, 채널 1/10번 베이스 혹은 물리 포트가 Port P 영역인 경우 모두에 대응.
-                        let is_bs_track_or_port = is_bass_track || ch_byte == 1 || ch_byte == 10 || current_port == 15 || current_port == 1;
+                        // 사전 선제 조사 단계에서 $BS 트랙을 확실하게 발견한 경우에는
+                        // 엉뚱한 베이스 채널(Ch 1, 10)이나 타 포트 음정 노이즈가 섞이지 않도록
+                        // 철저하게 해당 $BS 트랙(is_bass_track == true)의 노트 정보만 코드 연주 및 추출용 베이스라인으로 활용한다.
+                        // $BS 트랙이 전혀 발견되지 않은 공미디 파일인 경우에만 포트15, 채널1/10 등 기본 검출 모드로 폴백 기동한다.
+                        let is_bs_track_or_port = if is_bs_track_detected {
+                            is_bass_track
+                        } else {
+                            ch_byte == 1 || ch_byte == 10 || current_port == 15 || current_port == 1
+                        };
 
                         // 베이스 또는 $BS 트랙인 경우 음정 데이터 수집
                         if is_bs_track_or_port && !is_drum {
@@ -350,6 +404,7 @@ impl MimiSequencer {
             format: detected_format,
             chord_timeline,
             melody_channels,
+            is_bs_track_detected,
         })
     }
     //시간 경과에 따라 틱을 전진시키고
