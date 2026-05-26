@@ -74,6 +74,7 @@ impl App {
                 volume: 50,
                 current_rhythm: Rhythm::Original,
                 is_bs_detected: false,
+                current_tempo: 500_000,
             },
             file_list: Vec::new(),
             selected_index: 0,
@@ -615,12 +616,13 @@ fn render(frame: &mut Frame, app: &mut App) {
                     let s = &app.engine_status;
                     let seconds = s.current_time.as_secs();
                     format!(
-                        "State: {:?}  |  Time: {:02}:{:02} ({:>5} / {:>5} tick)",
+                        "State: {:?}  |  Time: {:02}:{:02} ({:>5} / {:>5} tick)   |  BPM: {:>3}",
                         s.state,
                         seconds / 60,
                         seconds % 60,
                         s.current_tick,
-                        s.total_tick
+                        s.total_tick,
+                        if s.current_tempo > 0 { ((60_000_000 / s.current_tempo) as f32 * s.tempo).round() as i32 } else { 0 },
                     )
                 }),
                 Line::from(format!(

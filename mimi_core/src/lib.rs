@@ -57,6 +57,8 @@ pub struct MimiEngineStatus {
     pub current_rhythm: Rhythm,
     // 해당 곡에서 코드 진행 추출용 $BS(또는 베이스 라인)이 실제로 검출되었는지 여부
     pub is_bs_detected: bool,
+    // 미디파일 의 현재 템포
+    pub current_tempo: i32,
 }
 
 /// 외부 제어용 인터페이스 핸들
@@ -342,6 +344,9 @@ impl AudioPlaybackContext {
                         status.current_tick = tick as u64;
                         let elapsed_sec = (tick as f64) * self.sequencer.microseconds_per_tick / 1_000_000.0;
                         status.current_time = std::time::Duration::from_secs_f64(elapsed_sec);
+                        // seek_to 내부에서 복원된 템포를 status에도 반영
+                        let restored_tempo = (self.sequencer.microseconds_per_tick * self.sequencer.ppq as f64) as i32;
+                        status.current_tempo = restored_tempo;
                     }
                     let elapsed_sec = (tick as f64) * self.sequencer.microseconds_per_tick / 1_000_000.0;
                     self.elapsed_time_sec = elapsed_sec;
@@ -769,6 +774,10 @@ impl AudioPlaybackContext {
                         let channel = channel.min(15) as usize;
                         self.drum_channels[port][channel] = is_drum;
                     }
+                    MidiEngineEvent::TempoChange { tempo } => {
+                        self.status.lock().unwrap().current_tempo = tempo as i32;
+                        let _ = self.ui_tx.send(MidiEngineEvent::TempoChange { tempo });
+                    }
                     other_event => {
                         let _ = self.ui_tx.send(other_event);
                     }
@@ -937,6 +946,7 @@ pub fn spawn_mimi_engine(
         volume: 50,
         current_rhythm: Rhythm::Original,
         is_bs_detected: false,
+        current_tempo: 500_000,
     }));
     let status_clone = Arc::clone(&player_status);
 
