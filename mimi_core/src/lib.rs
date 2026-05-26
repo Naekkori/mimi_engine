@@ -326,11 +326,12 @@ impl AudioPlaybackContext {
                             // 2. 프로그램 체인지(악기 변경) 적용
                             let prog = setup.program.unwrap_or(0);
                             if is_drum {
-                                let sfont_id = synth.get_program(9).map(|(id, _, _)| id).unwrap_or(1);
-                                let _ = synth.program_select(ch as u32, sfont_id, 128, prog as u32);
+                                let _ = synth.bank_select(ch as u32, 128);
                             } else {
-                                let _ = synth.program_change(ch as u32, prog as u32);
+                                let _ = synth.bank_select(ch as u32, resolved_bank >> 7);
+                                let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
                             }
+                            let _ = synth.program_change(ch as u32, prog as u32);
 
                             // 3. 주요 제어 컨트롤러(볼륨, 팬, 익스프레션) 복원
                             if let Some(vol) = setup.volume {
@@ -565,16 +566,14 @@ impl AudioPlaybackContext {
                                         MidiFormat::XG => (setup.bank_msb as u32) << 7,
                                     }
                                 };
-                                let _ = synth.bank_select(ch as u32, resolved_bank >> 7);
-                                let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
-
                                 let prog = setup.program.unwrap_or(0);
                                 if is_drum {
-                                    let sfont_id = synth.get_program(9).map(|(id, _, _)| id).unwrap_or(1);
-                                    let _ = synth.program_select(ch as u32, sfont_id, 128, prog as u32);
+                                    let _ = synth.bank_select(ch as u32, 128);
                                 } else {
-                                    let _ = synth.program_change(ch as u32, prog as u32);
+                                    let _ = synth.bank_select(ch as u32, resolved_bank >> 7);
+                                    let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
                                 }
+                                let _ = synth.program_change(ch as u32, prog as u32);
 
                                 if let Some(vol) = setup.volume {
                                     let _ = synth.cc(ch as u32, 7, vol as u32);
@@ -690,10 +689,10 @@ impl AudioPlaybackContext {
                         // 포트 범위 설정: SMF 포트 번호 그대로 맵핑하되 안전하게 min(1) 적용
                         // 단, Port P 등 15번 포트와 같이 고번호 포트 이진 이벤트는 synth_b 포트(1)로 라우팅되도록 설정하여 소리 및 코드 추출에 기여하게 함
                         let synth_port = if port >= 1 { 1 } else { 0 };
+                        let is_drum_ch = self.drum_channels[synth_port][channel as usize];
                         let target_channel = channel as u32;
                         // 포트에 해당되는 synth 지정
                         let synth = if synth_port == 0 { &self.synth_a } else { &self.synth_b };
-                        let is_drum_ch = self.drum_channels[synth_port][channel as usize];
 
                         if let midly::TrackEventKind::Midi { message, .. } = kind {
                             match message {
@@ -787,11 +786,10 @@ impl AudioPlaybackContext {
                                         }
                                     };
 
-                                    // 드럼 채널은 bank_select(128)이 SF2에 해당 뱅크가 없으면 폴백되므로,
-                                    // program_select로 sfont_id를 직접 지정하여 bank 128, prog N 프리셋을 강제 적용함
+                                    // 드럼 채널은 bank 128로 설정 후 program_change 적용
                                     if is_drum {
-                                        let sfont_id = synth.get_program(9).map(|(id, _, _)| id).unwrap_or(1);
-                                        let _ = synth.program_select(target_channel, sfont_id, 128, prog);
+                                        let _ = synth.bank_select(target_channel, 128);
+                                        let _ = synth.program_change(target_channel, prog);
                                     } else {
                                         let _ = synth.bank_select(target_channel, resolved_bank >> 7);
                                         let _ = synth.cc(target_channel, 32, lsb as u32);
