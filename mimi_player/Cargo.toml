@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.102"
 mimi_core = { path = "../mimi_core" }
+midly = "0.5.3"
 ratatui = "0.30.0"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"

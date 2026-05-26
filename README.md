@@ -12,9 +12,7 @@ MIMI는 저지연 오디오 합성과 정밀한 실시간 타이밍 제어를 �
 - **샘플 단위 시퀀싱** - 프레임별 틱 전진으로 MIDI 이벤트를 정밀하게 재현
 - **실시간 제어** - 재생 중 키 조옮김(Transpose), 템포 비율 조정, 틱 위치 점프(Seek)
 - **MIDI 규격 자동 감지** - SysEx 분석을 통한 GM / GS / XG 포맷 자동 판별 및 뱅크 매핑
-- **노래방 지원** - SMF 가사(Lyric/Text) 이벤트 파싱 및 UI 전달
 - **음 걸림 방지** - 키 변경, 일시정지, 정지 시 활성 노트 자동 해제
-- **채널 레벨 모니터링** - 포트별 16채널 velocity 추적 및 소프트 감쇠
 
 ## 프로젝트 구조
 
@@ -27,7 +25,7 @@ mimi_engine/
 ├── mimi_player/        # TUI 기반 레퍼런스 플레이어
 │   └── src/
 │       └── main.rs         # ratatui 기반 터미널 UI
-├── assets/             # MIDI 파일 및 사운드폰트
+├── assets/             # MIDI 파일 및 사운드폰트 (미포함)
 │   └── soundfont.sf2
 └── Cargo.toml          # 워크스페이스 루트
 ```
@@ -51,10 +49,10 @@ mimi_engine/
 
 ### `MimiEngineHandle`
 
-| 메서드 | 설명 |
+| 메서드 / 필드 | 설명 |
 |-------|------|
-| `send_command(MimiCommand)` | Play, Pause, Stop, SetKey, SetTempo, Seek 명령 전송 |
-| `get_status()` | 현재 상태, 틱 위치, 경과 시간 조회 |
+| `send_command(MimiCommand)` | Play, Pause, Stop, SetKey, SetTempo, SetVolume, Seek, LoadSong 명령 전송 |
+| `get_status()` | 현재 상태, 틱 위치, 경과 시간, 템포 배율, 키 오프셋, 볼륨 상태 조회 |
 | `get_state()` | 현재 PlayerState 반환 |
 | `ui_rx` | 가사, 채널 레벨, 틱 업데이트 등 UI 이벤트 수신 채널 |
 
@@ -62,11 +60,13 @@ mimi_engine/
 
 ```rust
 Play                // 재생 시작
-Pause               // 일시정지
+Pause               // 일시정지 (음 걸림 방지 처리 포함)
 Stop                // 정지 및 초기화
-SetKey(i8)          // 조옮김 오프셋 설정
-SetTempo(f32)       // 템포 배율 (1.0 = 정속)
+SetKey(i8)          // 조옮김 오프셋 설정 (-15 ~ +15)
+SetTempo(f32)       // 템포 배율 설정 (0.2 ~ 5.0)
+SetVolume(u8)       // 마스터 볼륨 설정 (0 ~ 100)
 Seek(u32)           // 특정 틱 위치로 점프
+LoadSong(Vec<u8>)   // 새로운 MIDI 바이너리 로드 및 대기
 ```
 
 ## 빌드 및 실행
@@ -83,14 +83,18 @@ cargo run -p mimi_player --release
 
 ### 플레이어 조작키
 
-| 키 | 동작 |
+| 키 / 마우스 | 동작 |
 |---|------|
 | `↑` / `↓` | 파일 선택 |
-| `Enter` | 재생 |
+| `Enter` | 파일 로드 및 재생 |
 | `Space` | 재생 / 일시정지 토글 |
 | `s` | 정지 |
-| `,` / `.` | 키 내림 / 올림 |
-| `Esc` | 리스트로 복귀 |
+| `,` / `.` | 키(음정) 내림 / 올림 |
+| `[` / `]` | 템포 내림 / 올림 (0.1 단위) |
+| `-` / `=` | 볼륨 내림 / 올림 (5 단위) |
+| `←` / `→` | 100틱 뒤로 / 앞으로 이동 (`Shift` 조합 시 500틱 단위) |
+| 마우스 왼쪽 클릭/드래그 | 재생 상태바에서 해당 위치로 직접 이동 (Seek) |
+| `Esc` | 재생 정지 및 파일 리스트 화면으로 복귀 |
 
 ## 라이선스
 

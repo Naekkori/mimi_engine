@@ -29,11 +29,17 @@ fn engine_test() -> Result<(), anyhow::Error> {
 
     // 2. MIMI 오디오 엔진 가동 (CPAL 하드웨어 스트림 및 오디오 스레드 자동 시작)
     println!("[엔진] MIMI 오디오 엔진 및 CPAL 스트림 초기화 중...");
-    let (engine_handle, _stream) = spawn_mimi_engine(sf_path, midi_bytes)?;
+    let (engine_handle, _stream) = spawn_mimi_engine(sf_path, |p, status| {
+        println!("[로딩 진행율] {:.0}% - {}", p * 100.0, status);
+    })?;
     println!(
         "[엔진] 초기화 성공. 현재 상태: {:?}",
         engine_handle.get_state()
     );
+
+    // 2.1 미디 바이너리 로드
+    println!("[엔진] 미디 파일 주입 중: {}", midi_path);
+    engine_handle.send_command(MimiCommand::LoadSong(midi_bytes))?;
 
     // 3. UI(가사/이벤트) 모니터링 전용 백그라운드 스레드 분리
     // Bevy 엔진이 메인 스레드에서 주기적으로 수신하는 상황을 시뮬레이션합니다.
@@ -96,5 +102,153 @@ fn engine_test() -> Result<(), anyhow::Error> {
     println!("      MIMI 미디 엔진 기본 기능 테스트 완료!      ");
     println!("==================================================");
     
+    Ok(())
+}
+
+#[test]
+fn parse_ky_techno_midi() -> Result<(), anyhow::Error> {
+    let midi_path = "../assets/ky_techno.mid";
+    let bytes = std::fs::read(midi_path).map_err(|e| {
+        anyhow::anyhow!("ky_techno.mid 파일을 찾을 수 없음: {:?}", e)
+    })?;
+    let smf = midly::Smf::parse(&bytes)?;
+    println!("--- ky_techno.mid PPQ: {:?} ---", smf.header.timing);
+
+    // 각 트랙명 선제 정보 파악
+    let mut track_names = Vec::new();
+    for (track_idx, track) in smf.tracks.iter().enumerate() {
+        let mut track_name = String::new();
+        for event in track.iter() {
+            if let midly::TrackEventKind::Meta(midly::MetaMessage::TrackName(bytes)) = &event.kind {
+                track_name = String::from_utf8_lossy(bytes).to_string();
+                break;
+            }
+        }
+        track_names.push(track_name);
+    }
+
+    // 마디/박자 및 코드 진행 흐름 파악을 위해 누적 이벤트 리스트 관리
+    #[derive(Debug)]
+    enum AnalyzeEvent {
+        Marker(String),
+        Text(String),
+        ProgramChange { channel: u8, program: u8 },
+        Controller { channel: u8, controller: u8, value: u8 },
+        NoteOn { channel: u8, key: u8, vel: u8 },
+        NoteOff { channel: u8, key: u8 },
+    }
+
+    #[derive(Debug)]
+    struct TrackEventWrapper {
+        tick: u64,
+        track_idx: usize,
+        event: AnalyzeEvent,
+    }
+
+    let mut events = Vec::new();
+
+    for (track_idx, track) in smf.tracks.iter().enumerate() {
+        let mut accum_tick = 0u64;
+        for event in track.iter() {
+            accum_tick += event.delta.as_int() as u64;
+            match &event.kind {
+                midly::TrackEventKind::Meta(midly::MetaMessage::Marker(bytes)) => {
+                    let text = String::from_utf8_lossy(bytes).to_string();
+                    events.push(TrackEventWrapper {
+                        tick: accum_tick,
+                        track_idx,
+                        event: AnalyzeEvent::Marker(text),
+                    });
+                }
+                midly::TrackEventKind::Meta(midly::MetaMessage::Text(bytes)) => {
+                    let text = String::from_utf8_lossy(bytes).to_string();
+                    events.push(TrackEventWrapper {
+                        tick: accum_tick,
+                        track_idx,
+                        event: AnalyzeEvent::Text(text),
+                    });
+                }
+                midly::TrackEventKind::Midi { channel, message } => {
+                    let ch = channel.as_int();
+                    match message {
+                        midly::MidiMessage::ProgramChange { program } => {
+                            events.push(TrackEventWrapper {
+                                tick: accum_tick,
+                                track_idx,
+                                event: AnalyzeEvent::ProgramChange { channel: ch, program: program.as_int() },
+                            });
+                        }
+                        midly::MidiMessage::Controller { controller, value } => {
+                            events.push(TrackEventWrapper {
+                                tick: accum_tick,
+                                track_idx,
+                                event: AnalyzeEvent::Controller {
+                                    channel: ch,
+                                    controller: controller.as_int(),
+                                    value: value.as_int(),
+                                },
+                            });
+                        }
+                        midly::MidiMessage::NoteOn { key, vel } => {
+                            let v = vel.as_int();
+                            if v > 0 {
+                                events.push(TrackEventWrapper {
+                                    tick: accum_tick,
+                                    track_idx,
+                                    event: AnalyzeEvent::NoteOn { channel: ch, key: key.as_int(), vel: v },
+                                });
+                            } else {
+                                events.push(TrackEventWrapper {
+                                    tick: accum_tick,
+                                    track_idx,
+                                    event: AnalyzeEvent::NoteOff { channel: ch, key: key.as_int() },
+                                });
+                            }
+                        }
+                        midly::MidiMessage::NoteOff { key, .. } => {
+                            events.push(TrackEventWrapper {
+                                tick: accum_tick,
+                                track_idx,
+                                event: AnalyzeEvent::NoteOff { channel: ch, key: key.as_int() },
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 틱 순서대로 통합 정렬
+    events.sort_by_key(|e| e.tick);
+
+    for ev in events {
+        let name = &track_names[ev.track_idx];
+        match ev.event {
+            AnalyzeEvent::Marker(text) => {
+                println!("[Marker] Tick {}: {}", ev.tick, text);
+            }
+            AnalyzeEvent::Text(text) => {
+                println!("[Text] Tick {}: {}", ev.tick, text);
+            }
+            AnalyzeEvent::ProgramChange { channel, program } => {
+                println!("[ProgChg] Tick {}: Ch {}, Prog {} (Track {}/{})", ev.tick, channel, program, ev.track_idx, name);
+            }
+            AnalyzeEvent::Controller { channel, controller, value } => {
+                // 주요 컨트롤러(볼륨 7, 익스프레션 11, 팬 10) 위주로만 출력
+                if controller == 7 || controller == 10 || controller == 11 {
+                    println!("[CtrlChg] Tick {}: Ch {}, CC {}, Val {} (Track {}/{})", ev.tick, channel, controller, value, ev.track_idx, name);
+                }
+            }
+            AnalyzeEvent::NoteOn { channel, key, vel } => {
+                println!("[NoteOn] Tick {}: Ch {}, Key {}, Vel {} (Track {}/{})", ev.tick, channel, key, vel, ev.track_idx, name);
+            }
+            AnalyzeEvent::NoteOff { channel, key } => {
+                println!("[NoteOff] Tick {}: Ch {}, Key {} (Track {}/{})", ev.tick, channel, key, ev.track_idx, name);
+            }
+        }
+    }
+
     Ok(())
 }
