@@ -108,9 +108,7 @@ impl MimiSequencer {
         melody_channels.push((0, 3)); // Ch 3 (0-based)
 
         // 미디 파일 전체 멀티트랙들을 로드해서 파싱 연주 루프에 돌입하기 전,
-        // 전체 트랙 헤더 메타 영역을 1차 선제 탐색하여 트랙명이 "$BS" 또는 "bass"인 트랙들의 
-        // 물리적인 실제 트랙 인덱스 목록을 사전 확보한다.
-        // 이것으로 $BS 포트 수집 오차 및 타이밍 전단 엇갈림 오탐을 완벽 봉쇄한다.
+        // 전체 트랙 헤더 메타 영역을 1차 선제 탐색하여 트랙명이 "$BS" 인 물리적인 실제 트랙 인덱스 목록을 사전 확보한다.
         let mut bs_track_indices = Vec::new();
         for (track_idx, track) in smf.tracks.iter().enumerate() {
             for event in track.iter() {
@@ -119,7 +117,7 @@ impl MimiSequencer {
                     let decoded_str = String::from_utf8_lossy(bytes).to_lowercase();
                     let name_bytes = *bytes;
                     
-                    let mut has_bs_tag = decoded_str.contains("bass") || decoded_str.contains("$bs");
+                    let mut has_bs_tag = decoded_str.contains("$bs");
                     
                     // CP949 깨짐 노이즈 대비 바이트 스캔
                     if !has_bs_tag && name_bytes.len() >= 2 {
@@ -162,7 +160,6 @@ impl MimiSequencer {
             let is_bass_track = bs_track_indices.contains(&track_idx);
             let mut track_bass_notes: Vec<(u32, u8)> = Vec::new();
 
-            // Domnino 화면에 나온 반주기 물리 포트 매핑 분석 적용:
             // Conductor 및 $BS, $GS, $RS, $FS 트랙들은 화면상 Port P (실제 미디 포트 번호 15 혹은 특정 디바이스 규격)로 출력됨
             // midly에서는 MidiPort(port)가 u8 형식이므로 0~15 가이드라인 가능.
             // 특히 Port P, Port C, Port N 등으로 표기되는 반주기 메타데이터 대응
