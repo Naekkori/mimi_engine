@@ -992,11 +992,26 @@ name = "mimi_core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "cpal",
  "crossbeam-channel",
  "fluidlite",
  "midly",
  "ratatui",
+]
+
+[[package]]
+name = "mimi_cpal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "mimi_core",
+]
+
+[[package]]
+name = "mimi_ffi"
+version = "0.1.0"
+dependencies = [
+ "mimi_core",
 ]
 
 [[package]]
@@ -1009,6 +1024,7 @@ dependencies = [
  "crossterm",
  "midly",
  "mimi_core",
+ "mimi_cpal",
  "ratatui",
 ]
 

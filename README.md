@@ -6,6 +6,8 @@
 
 MIMI는 저지연 오디오 합성과 정밀한 실시간 타이밍 제어를 목표로 하는 고성능 미디 엔진이다. 노래방 애플리케이션과 같은 실시간 인터랙티브 음악 시스템에 최적화되어 있으며, 샘플 단위의 정확한 MIDI 이벤트 처리를 지원한다.
 
+오디오 백엔드(cpal)가 코어와 완전히 분리되어 있어 Unreal Engine, Unity, Godot 등 자체 오디오 시스템을 가진 게임 엔진에서도 사용할 수 있다.
+
 ## 주요 기능
 
 - **저지연 오디오 합성** - `fluidlite` 기반 사운드폰트 신디사이저, 듀얼 포트(Synth A/B) 동시 합성
@@ -14,16 +16,23 @@ MIMI는 저지연 오디오 합성과 정밀한 실시간 타이밍 제어를 �
 - **MIDI 규격 자동 감지** - SysEx 분석을 통한 GM / GS / XG 포맷 자동 판별 및 뱅크 매핑
 - **음 걸림 방지** - 키 변경, 일시정지, 정지 시 활성 노트 자동 해제
 - **실시간 리듬 변환** - $BS(베이스) 트랙 코드 분석 기반으로 Disco, GoGo, Dance, Techno, Hiphop, Jitterbug 리듬 패턴 실시간 생성
+- **게임 엔진 연동** - C ABI FFI를 통해 Unreal / Unity / Godot 플러그인으로 통합 가능
 
 ## 프로젝트 구조
 
 ```
 mimi_engine/
-├── mimi_core/          # 엔진 코어 라이브러리
+├── mimi_core/          # 엔진 코어 라이브러리 (오디오 백엔드 독립적)
 │   └── src/
-│       ├── lib.rs          # 엔진 메인 (합성, 명령 처리, CPAL 스트림)
+│       ├── lib.rs          # 엔진 메인 (합성, 명령 처리, fill_buffer API)
 │       ├── sequencer.rs    # MIDI 파서 및 시퀀서
 │       └── rhythm_engine.rs # 실시간 리듬 변환 엔진 (코드 분석 및 패턴 생성)
+├── mimi_cpal/          # cpal 오디오 백엔드 (PC 독립 실행용)
+│   └── src/
+│       └── lib.rs          # cpal 장치 열기 및 fill_buffer 콜백 연결
+├── mimi_ffi/           # C ABI FFI 바인딩 (게임 엔진 플러그인용)
+│   └── src/
+│       └── lib.rs          # extern "C" 함수 노출 (.dll / .so / .dylib 빌드)
 ├── mimi_player/        # TUI 기반 레퍼런스 플레이어
 │   └── src/
 │       └── main.rs         # ratatui 기반 터미널 UI
@@ -32,25 +41,54 @@ mimi_engine/
 └── Cargo.toml          # 워크스페이스 루트
 ```
 
+### 크레이트 의존 관계
+
+```
+mimi_core   ←── mimi_cpal   ←── mimi_player
+     ↑
+mimi_ffi
+```
+
+`mimi_core`는 cpal에 의존하지 않으며, 오디오 출력 방식은 상위 레이어가 결정한다.
+
 ## 의존성
+
+### mimi_core
 
 | 크레이트 | 용도 |
 |---------|------|
 | `fluidlite` | SoundFont2 기반 소프트웨어 신디사이저 |
 | `midly` | MIDI(SMF) 파일 파싱 |
-| `cpal` | 크로스 플랫폼 오디오 출력 |
 | `crossbeam-channel` | 스레드 간 lock-free 명령/이벤트 채널 |
+| `anyhow` | 오류 처리 |
+
+### mimi_cpal
+
+| 크레이트 | 용도 |
+|---------|------|
+| `cpal` | 크로스 플랫폼 오디오 출력 |
+
+### mimi_player
+
+| 크레이트 | 용도 |
+|---------|------|
 | `ratatui` | 터미널 UI 프레임워크 |
-| `crossterm` | 터미널 입력 처리 (mimi_player) |
-| `color-eyre` | 오류 리포팅 (mimi_player) |
+| `crossterm` | 터미널 입력 처리 |
+| `color-eyre` | 오류 리포팅 |
 
 ## 핵심 API
 
-### `spawn_mimi_engine(sf_path, midi_bytes) -> (MimiEngineHandle, Stream)`
+### mimi_core
 
-사운드폰트 경로와 MIDI 바이트 데이터를 받아 오디오 엔진을 구동한다. `MimiEngineHandle`과 CPAL `Stream`을 반환하며, Stream의 수명이 다하면 오디오가 중단되므로 상위 스코프에서 관리해야 한다.
+#### `create_mimi_engine(sf_path, sample_rate, on_progress) -> (MimiEngineHandle, AudioPlaybackContext)`
 
-### `MimiEngineHandle`
+사운드폰트 경로와 샘플레이트를 받아 엔진 핸들과 오디오 컨텍스트를 생성한다. 오디오 출력은 반환된 `AudioPlaybackContext::fill_buffer`를 통해 상위 레이어가 직접 연결한다.
+
+#### `AudioPlaybackContext::fill_buffer(&mut self, output: &mut [f32])`
+
+게임 엔진 또는 오디오 백엔드의 콜백에서 호출한다. 스테레오 인터리브드(L/R/L/R...) f32 버퍼를 채운다.
+
+#### `MimiEngineHandle`
 
 | 메서드 / 필드 | 설명 |
 |-------|------|
@@ -58,6 +96,93 @@ mimi_engine/
 | `get_status()` | 현재 상태, 틱 위치, 경과 시간, 템포 배율, 키 오프셋, 볼륨 상태 조회 |
 | `get_state()` | 현재 PlayerState 반환 |
 | `ui_rx` | 가사, 채널 레벨, 틱 업데이트 등 UI 이벤트 수신 채널 |
+
+### mimi_cpal
+
+#### `spawn_mimi_engine(sf_path, on_progress) -> (MimiEngineHandle, cpal::Stream)`
+
+PC 독립 실행 환경에서 사용한다. cpal 기본 출력 장치를 열고 `fill_buffer`를 자동으로 연결한다. 반환된 `cpal::Stream`은 드롭되면 오디오가 끊기므로 상위 스코프에서 보관해야 한다.
+
+### mimi_ffi (게임 엔진 연동)
+
+`mimi_ffi`는 `cdylib` / `staticlib`으로 빌드되어 C 호환 `.dll` / `.so` / `.dylib`를 생성한다.
+
+#### 기본 흐름
+
+```c
+// 1. 게임 엔진 오디오 시스템의 샘플레이트를 넘겨서 핸들 생성
+MimiFfiHandle* handle = mimi_ffi_create("assets/soundfont.sf2", 48000.0f);
+
+// 2. MIDI 파일 로드
+mimi_ffi_load_song(handle, midi_bytes, midi_len);
+
+// 3. 재생 시작
+mimi_ffi_play(handle);
+
+// 4. 게임 엔진 오디오 콜백 안에서 버퍼 채우기 (스테레오 인터리브드 f32)
+mimi_ffi_fill_buffer(handle, audio_buffer, frame_count);
+
+// 5. 사용 종료 시 반드시 해제
+mimi_ffi_destroy(handle);
+```
+
+#### C ABI 함수 목록
+
+| 함수 | 설명 |
+|------|------|
+| `mimi_ffi_create(sf_path, sample_rate)` | 핸들 생성. 실패 시 null 반환 |
+| `mimi_ffi_destroy(handle)` | 핸들 해제 (반드시 호출) |
+| `mimi_ffi_fill_buffer(handle, buffer, frame_count)` | 오디오 콜백에서 버퍼 채우기 |
+| `mimi_ffi_load_song(handle, midi_data, data_len)` | MIDI 바이너리 로드 |
+| `mimi_ffi_play(handle)` | 재생 시작 |
+| `mimi_ffi_pause(handle)` | 일시정지 |
+| `mimi_ffi_stop(handle)` | 정지 및 초기화 |
+| `mimi_ffi_set_key(handle, key)` | 조옮김 설정 (-15 ~ +15) |
+| `mimi_ffi_set_tempo(handle, tempo)` | 템포 배율 설정 (0.2 ~ 5.0) |
+| `mimi_ffi_set_volume(handle, volume)` | 마스터 볼륨 설정 (0 ~ 100) |
+| `mimi_ffi_seek(handle, tick)` | 틱 위치로 이동 |
+| `mimi_ffi_set_rhythm(handle, rhythm)` | 리듬 모드 설정 (아래 표 참조) |
+| `mimi_ffi_get_status(handle, out)` | 상태 조회. 성공 시 1, 실패 시 0 반환 |
+
+#### 리듬 모드 상수
+
+| 값 | 리듬 |
+|----|------|
+| 0 | Original (원곡) |
+| 1 | Disco |
+| 2 | GoGo |
+| 3 | Dance |
+| 4 | Techno |
+| 5 | Hiphop |
+| 6 | Jitterbug |
+
+#### `MimiFfiStatus` 구조체
+
+```c
+typedef struct {
+    int   state;            // 0=Stopped, 1=Playing, 2=Paused
+    unsigned int current_tick;
+    unsigned int total_tick;
+    float current_time_sec;
+    float tempo;
+    int   key;
+    unsigned char volume;
+    int   current_tempo;    // µs/beat
+    int   is_bs_detected;   // 0 또는 1
+    int   current_rhythm;   // 위 리듬 모드 상수와 동일
+} MimiFfiStatus;
+```
+
+#### mimi_ffi 빌드
+
+```bash
+# .dll / .so / .dylib 생성
+cargo build --release -p mimi_ffi
+```
+
+빌드 결과물은 `target/release/` 아래 플랫폼별 확장자로 생성된다.
+
+---
 
 ### `MimiCommand`
 
@@ -120,11 +245,14 @@ ChordUpdate { root_pitch, is_minor }               // 실시간 코드 상태 (�
 ## 빌드 및 실행
 
 ```bash
-# 빌드
+# 전체 빌드
 cargo build --release
 
 # TUI 플레이어 실행
 cargo run -p mimi_player --release
+
+# 게임 엔진용 FFI 라이브러리 빌드
+cargo build --release -p mimi_ffi
 ```
 
 `assets/` 디렉토리에 `.mid` 파일과 `soundfont.sf2`를 배치한 후 플레이어를 실행한다.

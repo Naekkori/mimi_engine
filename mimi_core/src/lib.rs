@@ -2,7 +2,6 @@
 
 mod sequencer;
 mod rhythm_engine;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use fluidlite::{IsSettings, IsSamples, Settings, Synth};
 use midly::TrackEventKind;
@@ -92,7 +91,7 @@ impl MimiEngineHandle {
 }
 
 /// 오디오 콜백 스레드와 통신하며 시퀀싱 및 합성을 전담할 오디오 컨텍스트
-struct AudioPlaybackContext {
+pub struct AudioPlaybackContext {
     sequencer: MimiSequencer,
     synth_a: Synth,
     synth_b: Synth,
@@ -611,7 +610,7 @@ impl AudioPlaybackContext {
     }
 
     /// 오디오 하드웨어가 요청한 샘플 개수만큼 미디 이벤트를 처리하고 오디오를 합성합니다.
-    fn fill_buffer(&mut self, output_buffer: &mut [f32]) {
+    pub fn fill_buffer(&mut self, output_buffer: &mut [f32]) {
         // 버퍼 초기화 (이전 루프의 잔상 제거)
         output_buffer.fill(0.0);
 
@@ -962,12 +961,14 @@ impl AudioPlaybackContext {
     }
 }
 
-/// MIMI 엔진 구동 및 CPAL 하드웨어 오디오 스트림 활성화 함수
-pub fn spawn_mimi_engine(
+/// MIMI 엔진 컨텍스트와 핸들을 생성하여 반환 (오디오 백엔드 독립적)
+/// 실제 오디오 출력은 반환된 AudioPlaybackContext의 fill_buffer를 통해 상위 레이어가 담당함
+pub fn create_mimi_engine(
     sf_path: &str,
-    mut on_progress: impl FnMut(f32, &str) + Send + 'static,
-) -> Result<(MimiEngineHandle, cpal::Stream), anyhow::Error> {
-    on_progress(0.05, "오디오 출력 장치 및 스트림 초기화 중...");
+    sample_rate: f64,
+    mut on_progress: impl FnMut(f32, &str),
+) -> Result<(MimiEngineHandle, AudioPlaybackContext), anyhow::Error> {
+    on_progress(0.05, "엔진 내부 채널 초기화 중...");
     let (command_tx, command_rx) = unbounded::<MimiCommand>();
     let (ui_tx, ui_rx) = unbounded::<MidiEngineEvent>();
 
@@ -986,31 +987,14 @@ pub fn spawn_mimi_engine(
     }));
     let status_clone = Arc::clone(&player_status);
 
-    // 1. CPAL을 통한 오디오 하드웨어 장치 열기
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| anyhow::anyhow!("오디오 출력 장치를 찾을 수 없습니다."))?;
-    let config = device.default_output_config()?;
-    let sample_rate = config.sample_rate() as f64;
-    let channels = config.channels();
-
-    // 스테레오 채널 설정 확인
-    let cpal_config: cpal::StreamConfig = config.into();
-    if channels != 2u16 {
-        return Err(anyhow::anyhow!(
-            "MIMI 엔진은 현재 스테레오(2채널) 출력 장치만 지원합니다."
-        ));
-    }
-
     on_progress(0.15, "신디사이저 A 준비 중...");
 
-    // 2. fluidlite 합성기 설정 (Synth A & B)
+    // fluidlite 합성기 설정 (Synth A & B)
     let settings_a = Settings::new()
         .map_err(|e| anyhow::anyhow!("FluidLite Settings A 생성 실패: {:?}", e))?;
 
     if let Some(sr_setting) = settings_a.num("synth.sample-rate") {
-        sr_setting.set(sample_rate as f64);
+        sr_setting.set(sample_rate);
     }
 
     let synth_a = Synth::new(settings_a)
@@ -1020,7 +1004,6 @@ pub fn spawn_mimi_engine(
     synth_a.sfload(sf_path, true)
         .map_err(|e| anyhow::anyhow!("사운드폰트 A 로드 실패: {:?}", e))?;
 
-    // 초기 볼륨에 따른 기본 게인 설정 (소리 확 튀는 현상 방지)
     synth_a.set_gain(1.0);
 
     on_progress(0.50, "신디사이저 B 준비 중...");
@@ -1029,7 +1012,7 @@ pub fn spawn_mimi_engine(
         .map_err(|e| anyhow::anyhow!("FluidLite Settings B 생성 실패: {:?}", e))?;
 
     if let Some(sr_setting) = settings_b.num("synth.sample-rate") {
-        sr_setting.set(sample_rate as f64);
+        sr_setting.set(sample_rate);
     }
 
     let synth_b = Synth::new(settings_b)
@@ -1039,21 +1022,18 @@ pub fn spawn_mimi_engine(
     synth_b.sfload(sf_path, true)
         .map_err(|e| anyhow::anyhow!("사운드폰트 B 로드 실패: {:?}", e))?;
 
-    // 초기 볼륨에 따른 기본 게인 설정 (소리 확 튀는 현상 방지)
     synth_b.set_gain(1.0);
 
     on_progress(0.85, "미디 시퀀서 초기화 중...");
 
-    // 3. 시퀀서 준비
     let sequencer = MimiSequencer::empty();
     let sequencer_format = sequencer.format;
 
     player_status.lock().unwrap().total_tick = 0;
 
-    on_progress(0.90, "오디오 출력 스트림 구축 중...");
+    on_progress(0.95, "오디오 컨텍스트 구성 중...");
 
-    // 4. 오디오 콜백 스레드로 넘겨줄 컨텍스트 객체 생성
-    let mut playback_context = AudioPlaybackContext {
+    let playback_context = AudioPlaybackContext {
         sequencer,
         synth_a,
         synth_b,
@@ -1082,20 +1062,6 @@ pub fn spawn_mimi_engine(
         next_rhythm_note_index: 0,
     };
 
-    // 5. CPAL 오디오 스트림 생성 (독립 하드웨어 스레드에서 무한 반복 호출됨)
-    let error_callback = |err| eprintln!("오디오 스트림 에러 발생: {}", err);
-    let stream = device.build_output_stream(
-        &cpal_config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            playback_context.fill_buffer(data);
-        },
-        error_callback,
-        None,
-    )?;
-
-    // 스트림 즉시 가동
-    stream.play()?;
-
     on_progress(1.0, "엔진 초기화 완료!");
 
     let handle = MimiEngineHandle {
@@ -1105,6 +1071,5 @@ pub fn spawn_mimi_engine(
         ui_tx,
     };
 
-    // cpal::Stream의 수명이 다하면 소리가 끊기므로 Handle과 함께 반환하여 상위 메인에서 관리하도록 함
-    Ok((handle, stream))
+    Ok((handle, playback_context))
 }

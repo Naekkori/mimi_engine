@@ -1,5 +1,5 @@
 use color_eyre::eyre::eyre;
-use cpal; // 오디오 스트림 타입을 인식하기 위해 cpal 크레이트 선언
+use cpal;
 use crossterm::event;
 use mimi_core::{KEY_MAX, KEY_MIN, TEMPO_MAX, TEMPO_MIN, VOLUME_MAX, VOLUME_MIN, Rhythm};
 use mimi_core::{MimiCommand, MimiEngineHandle, MimiEngineStatus, PlayerState};
@@ -149,7 +149,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
         let tx_prog = tx_clone.clone();
         let load_res = || -> Result<(MimiEngineHandle, cpal::Stream), String> {
             let (handle, stream) =
-                mimi_core::spawn_mimi_engine(&sf_path_str, move |p, msg| {
+                mimi_cpal::spawn_mimi_engine(&sf_path_str, move |p, msg| {
                     let _ = tx_prog.send(LoadingEvent::Progress(p, msg.to_string()));
                 })
                 .map_err(|e| format!("엔진 초기 생성 실패: {:?}", e))?;
