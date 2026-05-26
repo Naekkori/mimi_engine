@@ -166,6 +166,94 @@ impl MimiSequencer {
 
             for event in track.iter() {
                 accum_tick += event.delta.as_int();
+
+                // SysEx는 to_static() 호출 시 바이트슬라이스가 빈 슬라이스로 교체되므로
+                // 원본 event.kind에서 직접 파싱해야 함
+                if let TrackEventKind::SysEx(data) = &event.kind {
+                    let is_gm_reset = data.len() >= 4
+                        && data[0] == 0x7E && data[2] == 0x09;
+
+                    let is_gs_reset = data.len() >= 7
+                        && data[0] == 0x41 && data[2] == 0x42
+                        && data[3] == 0x12 && data[4] == 0x40
+                        && data[5] == 0x00 && data[6] == 0x7F;
+
+                    let is_xg_on = data.len() >= 7
+                        && data[0] == 0x43 && data[2] == 0x4C
+                        && data[3] == 0x00 && data[4] == 0x00
+                        && data[5] == 0x7E && data[6] == 0x00;
+
+                    if is_xg_on {
+                        detected_format = MidiFormat::XG;
+                    } else if is_gs_reset {
+                        detected_format = MidiFormat::GS;
+                    } else if is_gm_reset {
+                        detected_format = MidiFormat::GM;
+                    }
+
+                    if is_gm_reset || is_gs_reset || is_xg_on {
+                        all_events.push(SequenceEvent {
+                            absolute_tick: accum_tick,
+                            priority: 0,
+                            inner: MidiEngineEvent::MidiReset,
+                        });
+                    }
+
+                    // Roland GS Rhythm Part Assign
+                    // F0 41 <device_id> 42 12 40 1x 15 <value> <checksum> F7
+                    // F0, F7 제거된 data 바이트 기준
+                    if data.len() >= 9
+                        && data[0] == 0x41
+                        && data[2] == 0x42
+                        && data[3] == 0x12
+                        && data[4] == 0x40
+                        && (data[5] & 0xF0) == 0x10
+                        && data[6] == 0x15
+                    {
+                        let part = data[5] & 0x0F;
+                        let ch = match part {
+                            0 => 9,                         // Part 10 -> Ch 10 (0-based 9)
+                            p if p >= 1 && p <= 9 => p - 1, // Part 1~9 -> Ch 1~9 (0-based 0~8)
+                            p if p >= 10 && p <= 15 => p,  // Part 11~16 -> Ch 11~16 (0-based 10~15)
+                            _ => 9,
+                        };
+                        let is_drum = data[7] == 1 || data[7] == 2;
+                        all_events.push(SequenceEvent {
+                            absolute_tick: accum_tick,
+                            priority: 1,
+                            inner: MidiEngineEvent::SetDrumChannel {
+                                port: current_port,
+                                channel: ch,
+                                is_drum,
+                            },
+                        });
+                    }
+
+                    // Yamaha XG Part Mode (Rhythm Part Assign)
+                    // F0 43 <device_id> 4C 08 1x 0E <value> F7
+                    // F0, F7 제거된 data 바이트 기준
+                    if data.len() >= 7
+                        && data[0] == 0x43
+                        && data[2] == 0x4C
+                        && data[3] == 0x08
+                        && (data[4] & 0xF0) == 0x10
+                        && data[5] == 0x0E
+                    {
+                        let part = data[4] & 0x0F;
+                        let is_drum = data[6] >= 1;
+                        all_events.push(SequenceEvent {
+                            absolute_tick: accum_tick,
+                            priority: 1,
+                            inner: MidiEngineEvent::SetDrumChannel {
+                                port: current_port,
+                                channel: part,
+                                is_drum,
+                            },
+                        });
+                    }
+
+                }
+
                 let kind = event.kind.to_static();
 
                 match &kind {
@@ -244,90 +332,8 @@ impl MimiSequencer {
                             inner: MidiEngineEvent::TempoChange { tempo: tempo.as_int() },
                         });
                     }
-                    //SysEx를 통한 시스템 리셋 및 드럼 채널 변경 감지
-                    TrackEventKind::SysEx(data)=>{
-                        let is_gm_reset = data.len() >= 4
-                            && data[0] == 0x7E && data[2] == 0x09;
-
-                        let is_gs_reset = data.len() >= 7
-                            && data[0] == 0x41 && data[2] == 0x42
-                            && data[3] == 0x12 && data[4] == 0x40
-                            && data[5] == 0x00 && data[6] == 0x7F;
-
-                        let is_xg_on = data.len() >= 7
-                            && data[0] == 0x43 && data[2] == 0x4C
-                            && data[3] == 0x00 && data[4] == 0x00
-                            && data[5] == 0x7E && data[6] == 0x00;
-
-                        if is_xg_on {
-                            detected_format = MidiFormat::XG;
-                        } else if is_gs_reset {
-                            detected_format = MidiFormat::GS;
-                        } else if is_gm_reset {
-                            detected_format = MidiFormat::GM;
-                        }
-
-                        if is_gm_reset || is_gs_reset || is_xg_on {
-                            all_events.push(SequenceEvent {
-                                absolute_tick: accum_tick,
-                                priority: 0,
-                                inner: MidiEngineEvent::MidiReset,
-                            });
-                        }
-
-                        // Roland GS Rhythm Part Assign
-                        // F0 41 <device_id> 42 12 40 1x 15 <value> <checksum> F7
-                        // F0, F7 제거된 data 바이트 기준
-                        if data.len() >= 9
-                            && data[0] == 0x41
-                            && data[2] == 0x42
-                            && data[3] == 0x12
-                            && data[4] == 0x40
-                            && (data[5] & 0xF0) == 0x10
-                            && data[6] == 0x15
-                        {
-                            let part = data[5] & 0x0F;
-                            let ch = match part {
-                                0 => 9,                         // Part 10 -> Ch 10 (0-based 9)
-                                p if p >= 1 && p <= 9 => p - 1, // Part 1~9 -> Ch 1~9 (0-based 0~8)
-                                p if p >= 10 && p <= 15 => p,  // Part 11~16 -> Ch 11~16 (0-based 10~15)
-                                _ => 9,
-                            };
-                            let is_drum = data[7] == 1 || data[7] == 2;
-                            all_events.push(SequenceEvent {
-                                absolute_tick: accum_tick,
-                                priority: 0,
-                                inner: MidiEngineEvent::SetDrumChannel {
-                                    port: current_port,
-                                    channel: ch,
-                                    is_drum,
-                                },
-                            });
-                        }
-
-                        // Yamaha XG Part Mode (Rhythm Part Assign)
-                        // F0 43 <device_id> 4C 08 1x 0E <value> F7
-                        // F0, F7 제거된 data 바이트 기준
-                        if data.len() >= 7
-                            && data[0] == 0x43
-                            && data[2] == 0x4C
-                            && data[3] == 0x08
-                            && (data[4] & 0xF0) == 0x10
-                            && data[5] == 0x0E
-                        {
-                            let part = data[4] & 0x0F;
-                            let is_drum = data[6] >= 1;
-                            all_events.push(SequenceEvent {
-                                absolute_tick: accum_tick,
-                                priority: 0,
-                                inner: MidiEngineEvent::SetDrumChannel {
-                                    port: current_port,
-                                    channel: part,
-                                    is_drum,
-                                },
-                            });
-                        }
-                    }
+                    // SysEx 처리는 위의 event.kind 직접 참조 블록에서 완료됨
+                    TrackEventKind::SysEx(_) => {}
                     _ => {}
                 }
             }

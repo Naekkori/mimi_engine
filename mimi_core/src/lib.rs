@@ -320,12 +320,17 @@ impl AudioPlaybackContext {
                                     MidiFormat::XG => (setup.bank_msb as u32) << 7,
                                 }
                             };
-                            let _ = synth.cc(ch as u32, 0, (resolved_bank >> 7) & 127);
+                            let _ = synth.bank_select(ch as u32, resolved_bank >> 7);
                             let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
 
                             // 2. 프로그램 체인지(악기 변경) 적용
                             let prog = setup.program.unwrap_or(0);
-                            let _ = synth.program_change(ch as u32, prog as u32);
+                            if is_drum {
+                                let sfont_id = synth.get_program(9).map(|(id, _, _)| id).unwrap_or(1);
+                                let _ = synth.program_select(ch as u32, sfont_id, 128, prog as u32);
+                            } else {
+                                let _ = synth.program_change(ch as u32, prog as u32);
+                            }
 
                             // 3. 주요 제어 컨트롤러(볼륨, 팬, 익스프레션) 복원
                             if let Some(vol) = setup.volume {
@@ -560,11 +565,16 @@ impl AudioPlaybackContext {
                                         MidiFormat::XG => (setup.bank_msb as u32) << 7,
                                     }
                                 };
-                                let _ = synth.cc(ch as u32, 0, (resolved_bank >> 7) & 127);
+                                let _ = synth.bank_select(ch as u32, resolved_bank >> 7);
                                 let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
 
                                 let prog = setup.program.unwrap_or(0);
-                                let _ = synth.program_change(ch as u32, prog as u32);
+                                if is_drum {
+                                    let sfont_id = synth.get_program(9).map(|(id, _, _)| id).unwrap_or(1);
+                                    let _ = synth.program_select(ch as u32, sfont_id, 128, prog as u32);
+                                } else {
+                                    let _ = synth.program_change(ch as u32, prog as u32);
+                                }
 
                                 if let Some(vol) = setup.volume {
                                     let _ = synth.cc(ch as u32, 7, vol as u32);
@@ -777,9 +787,16 @@ impl AudioPlaybackContext {
                                         }
                                     };
 
-                                    let _ = synth.cc(target_channel, 0, (resolved_bank >> 7) & 127);
-                                    let _ = synth.cc(target_channel, 32, lsb as u32);
-                                    let _ = synth.program_change(target_channel, prog);
+                                    // 드럼 채널은 bank_select(128)이 SF2에 해당 뱅크가 없으면 폴백되므로,
+                                    // program_select로 sfont_id를 직접 지정하여 bank 128, prog N 프리셋을 강제 적용함
+                                    if is_drum {
+                                        let sfont_id = synth.get_program(9).map(|(id, _, _)| id).unwrap_or(1);
+                                        let _ = synth.program_select(target_channel, sfont_id, 128, prog);
+                                    } else {
+                                        let _ = synth.bank_select(target_channel, resolved_bank >> 7);
+                                        let _ = synth.cc(target_channel, 32, lsb as u32);
+                                        let _ = synth.program_change(target_channel, prog);
+                                    }
                                 }
                                 midly::MidiMessage::PitchBend { bend } => {
                                     let raw = bend.as_int();
