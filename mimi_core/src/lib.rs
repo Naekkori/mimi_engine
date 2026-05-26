@@ -1,13 +1,13 @@
 // mimi_core/src/lib.rs
 
 mod sequencer;
-mod rythm_engine;
+mod rhythm_engine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use fluidlite::{IsSettings, IsSamples, Settings, Synth};
 use midly::TrackEventKind;
 pub use sequencer::{MidiEngineEvent, MidiFormat, MimiSequencer};
-pub use rythm_engine::{Rhythm, RhythmEngine, MidiNote, BsChordEvent};
+pub use rhythm_engine::{Rhythm, RhythmEngine, MidiNote, BsChordEvent};
 use std::sync::{Arc, Mutex};
 
 // 템포 배율 제한 (0.2 ~ 5.0)
@@ -825,9 +825,9 @@ impl AudioPlaybackContext {
                             if let Some(rhythm_pattern) = self.rhythm_engine.pattern_library.get(&self.rhythm_engine.current_rhythm) {
                                 if let Some(track) = rhythm_pattern.tracks.iter().find(|t| {
                                     match t.track_type {
-                                        crate::rythm_engine::TrackType::Drum => is_drum,
-                                        crate::rythm_engine::TrackType::Bass => note.channel == 1,
-                                        crate::rythm_engine::TrackType::Accompaniment => note.channel == 2,
+                                        crate::rhythm_engine::TrackType::Drum => is_drum,
+                                        crate::rhythm_engine::TrackType::Bass => note.channel == 1,
+                                        crate::rhythm_engine::TrackType::Accompaniment => note.channel == 2,
                                     }
                                 }) {
                                     let _ = self.synth_b.program_change(target_channel, track.instrument_program as u32);

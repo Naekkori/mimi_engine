@@ -1,5 +1,5 @@
 use midly::{Smf, TrackEventKind};
-pub use crate::rythm_engine::BsChordEvent;
+pub use crate::rhythm_engine::BsChordEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MidiFormat {
