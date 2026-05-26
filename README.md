@@ -13,6 +13,7 @@ MIMI는 저지연 오디오 합성과 정밀한 실시간 타이밍 제어를 �
 - **실시간 제어** - 재생 중 키 조옮김(Transpose), 템포 비율 조정, 틱 위치 점프(Seek)
 - **MIDI 규격 자동 감지** - SysEx 분석을 통한 GM / GS / XG 포맷 자동 판별 및 뱅크 매핑
 - **음 걸림 방지** - 키 변경, 일시정지, 정지 시 활성 노트 자동 해제
+- **실시간 리듬 변환** - $BS(베이스) 트랙 코드 분석 기반으로 Disco, GoGo, Dance, Techno, Hiphop, Jitterbug 리듬 패턴 실시간 생성
 
 ## 프로젝트 구조
 
@@ -21,7 +22,8 @@ mimi_engine/
 ├── mimi_core/          # 엔진 코어 라이브러리
 │   └── src/
 │       ├── lib.rs          # 엔진 메인 (합성, 명령 처리, CPAL 스트림)
-│       └── sequencer.rs    # MIDI 파서 및 시퀀서
+│       ├── sequencer.rs    # MIDI 파서 및 시퀀서
+│       └── rhythm_engine.rs # 실시간 리듬 변환 엔진 (코드 분석 및 패턴 생성)
 ├── mimi_player/        # TUI 기반 레퍼런스 플레이어
 │   └── src/
 │       └── main.rs         # ratatui 기반 터미널 UI
@@ -38,8 +40,9 @@ mimi_engine/
 | `midly` | MIDI(SMF) 파일 파싱 |
 | `cpal` | 크로스 플랫폼 오디오 출력 |
 | `crossbeam-channel` | 스레드 간 lock-free 명령/이벤트 채널 |
-| `ratatui` | 터미널 UI 프레임워크 (mimi_player) |
+| `ratatui` | 터미널 UI 프레임워크 |
 | `crossterm` | 터미널 입력 처리 (mimi_player) |
+| `color-eyre` | 오류 리포팅 (mimi_player) |
 
 ## 핵심 API
 
@@ -59,15 +62,60 @@ mimi_engine/
 ### `MimiCommand`
 
 ```rust
-Play                // 재생 시작
-Pause               // 일시정지 (음 걸림 방지 처리 포함)
-Stop                // 정지 및 초기화
-SetKey(i8)          // 조옮김 오프셋 설정 (-15 ~ +15)
-SetTempo(f32)       // 템포 배율 설정 (0.2 ~ 5.0)
-SetVolume(u8)       // 마스터 볼륨 설정 (0 ~ 100)
-Seek(u32)           // 특정 틱 위치로 점프
-LoadSong(Vec<u8>)   // 새로운 MIDI 바이너리 로드 및 대기
+Play                    // 재생 시작
+Pause                   // 일시정지 (음 걸림 방지 처리 포함)
+Stop                    // 정지 및 초기화
+SetKey(i8)              // 조옮김 오프셋 설정 (-15 ~ +15)
+SetTempo(f32)           // 템포 배율 설정 (0.2 ~ 5.0)
+SetVolume(u8)           // 마스터 볼륨 설정 (0 ~ 100)
+Seek(u32)               // 특정 틱 위치로 점프
+LoadSong(Vec<u8>)       // 새로운 MIDI 바이너리 로드 및 대기
+SetRhythm(Rhythm)       // 실시간 리듬 모드 변경
 ```
+
+### `Rhythm`
+
+```rust
+Original    // 원곡 그대로 (리듬 변환 꺼짐)
+Disco       // 디스코
+GoGo        // 고고
+Dance       // 댄스
+Techno      // 테크노
+Hiphop      // 힙합
+Jitterbug   // 지르박
+```
+
+### `MidiEngineEvent`
+
+엔진이 UI 쪽(`ui_rx`)으로 송출하는 이벤트 타입이다.
+
+```rust
+MidiPlay { port, channel, is_drum_channel, kind }  // MIDI 이벤트 원본
+TempoChange { tempo }                              // 템포 변경
+SmfKaraokeText { text }                           // 노래방 가사
+MidiReset                                          // 시스템 리셋
+TickUpdate { current_tick, total_tick }            // 재생 진행 위치
+ChannelLevel { port, levels }                      // 채널 레벨미터
+SetDrumChannel { port, channel, is_drum }          // 드럼 채널 설정 변경
+ChordUpdate { root_pitch, is_minor }               // 실시간 코드 상태 (디버그)
+```
+
+### `MimiEngineStatus`
+
+`get_status()`로 조회하는 통합 상태 구조체이다.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `state` | `PlayerState` | 현재 재생 상태 (Stopped / Playing / Paused) |
+| `current_tick` | `u64` | 현재 틱 위치 |
+| `total_tick` | `u64` | 전체 틱 수 |
+| `current_time` | `Duration` | 경과 시간 |
+| `tempo` | `f32` | 현재 템포 배율 |
+| `key` | `i8` | 현재 조옮김 오프셋 |
+| `volume` | `u8` | 현재 마스터 볼륨 |
+| `current_rhythm` | `Rhythm` | 현재 리듬 모드 |
+| `current_tempo` | `i32` | MIDI 파일 원본 템포 (µs/beat) |
+| `is_bs_detected` | `bool` | $BS(베이스) 트랙 검출 여부 |
 
 ## 빌드 및 실행
 

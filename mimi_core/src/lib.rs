@@ -204,6 +204,7 @@ impl AudioPlaybackContext {
                         pan: Option<u8>,
                         expression: Option<u8>,
                         pitch_bend: Option<u16>,
+                        pitch_bend_range: Option<u8>,
                     }
 
                     let mut channel_presets = [[ChannelSetup {
@@ -214,6 +215,7 @@ impl AudioPlaybackContext {
                         pan: None,
                         expression: None,
                         pitch_bend: None,
+                        pitch_bend_range: None,
                     }; 16]; 2];
 
                     // Seek 지점 이전 이벤트 중 상태성 이벤트만 추적
@@ -230,6 +232,7 @@ impl AudioPlaybackContext {
                                     pan: None,
                                     expression: None,
                                     pitch_bend: None,
+                                    pitch_bend_range: None,
                                 }; 16]; 2];
                                 self.bank_msb = [[0u8; 16]; 2];
                                 self.bank_lsb = [[0u8; 16]; 2];
@@ -272,6 +275,10 @@ impl AudioPlaybackContext {
                                                 }
                                                 11 => {
                                                     channel_presets[p][ch].expression = Some(val);
+                                                }
+                                                // RPN Pitch Bend Range의 Data Entry MSB(CC 6) 추적
+                                                6 => {
+                                                    channel_presets[p][ch].pitch_bend_range = Some(val);
                                                 }
                                                 _ => {}
                                             }
@@ -331,7 +338,12 @@ impl AudioPlaybackContext {
                                 let _ = synth.cc(ch as u32, 11, exp as u32);
                             }
 
-                            // 4. 피치 벤드 복원
+                            // 4. 피치 벤드 범위(RPN) 복원
+                            if let Some(pbr) = setup.pitch_bend_range {
+                                let _ = synth.pitch_wheel_sens(ch as u32, pbr as u32);
+                            }
+
+                            // 5. 피치 벤드 복원
                             if let Some(pb) = setup.pitch_bend {
                                 let _ = synth.pitch_bend(ch as u32, pb as u32);
                             }
@@ -462,6 +474,7 @@ impl AudioPlaybackContext {
                             pan: Option<u8>,
                             expression: Option<u8>,
                             pitch_bend: Option<u16>,
+                            pitch_bend_range: Option<u8>,
                         }
 
                         let mut channel_presets = [[ChannelSetup {
@@ -472,6 +485,7 @@ impl AudioPlaybackContext {
                             pan: None,
                             expression: None,
                             pitch_bend: None,
+                            pitch_bend_range: None,
                         }; 16]; 2];
 
                         // 현재 재생 틱 이전의 미디 설정 이벤트 스캔
@@ -488,6 +502,7 @@ impl AudioPlaybackContext {
                                         pan: None,
                                         expression: None,
                                         pitch_bend: None,
+                                        pitch_bend_range: None,
                                     }; 16]; 2];
                                 }
                                 MidiEngineEvent::MidiPlay { port, channel, is_drum_channel: _, kind } => {
@@ -504,6 +519,8 @@ impl AudioPlaybackContext {
                                                     7 => channel_presets[p][ch].volume = Some(val),
                                                     10 => channel_presets[p][ch].pan = Some(val),
                                                     11 => channel_presets[p][ch].expression = Some(val),
+                                                    // RPN Pitch Bend Range의 Data Entry MSB(CC 6) 추적
+                                                    6 => channel_presets[p][ch].pitch_bend_range = Some(val),
                                                     _ => {}
                                                 }
                                             }
@@ -557,6 +574,10 @@ impl AudioPlaybackContext {
                                 }
                                 if let Some(exp) = setup.expression {
                                     let _ = synth.cc(ch as u32, 11, exp as u32);
+                                }
+                                // RPN 피치 벤드 범위 복원
+                                if let Some(pbr) = setup.pitch_bend_range {
+                                    let _ = synth.pitch_wheel_sens(ch as u32, pbr as u32);
                                 }
                                 if let Some(pb) = setup.pitch_bend {
                                     let _ = synth.pitch_bend(ch as u32, pb as u32);
