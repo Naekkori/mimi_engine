@@ -93,7 +93,7 @@ impl App {
 
 fn main() -> color_eyre::Result<()> {
     //터미널 타이틀 설정
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("Mimi Player".to_string()));
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("Mimi Player 😸".to_string()));
     color_eyre::install()?;
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
