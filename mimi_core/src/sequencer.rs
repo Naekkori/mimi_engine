@@ -45,6 +45,12 @@ pub enum MidiEngineEvent {
         root_pitch: u8, // C=0, C#=1 ... B=11
         is_minor: bool,
     },
+    // 리듬엔진 제어
+    RhythmEngineControl {
+        command:u8, //커멘드 타입
+        mask_lo:u8, //하위 8비트 마스크 (채널 1~8)
+        mask_hi:u8, //상위 8비트 마스크 (채널 9~16)
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -251,7 +257,32 @@ impl MimiSequencer {
                             },
                         });
                     }
-
+                    // 리듬엔진 제어 메세지
+                    /*
+                        바이트 순서,값 (Hex),설명
+                        1,0xF0,시작
+                        2,0x7D,벤더 코드
+                        3,0x01,시스템 제어
+                        4,0x20,포트 A 리듬 변환 모드 (0x01: 리듬 변환, 0x00: 리듬 변환 해제)
+                        5,0x9F,채널 1~8 뮤트 마스크
+                        6,0xFF,채널 9~16 뮤트 마스크
+                        7,0xF7,종료
+                     */
+                    if data.len() >= 5
+                        && data[0] == 0x7D
+                        && (data[1] == 0x01 || data[1] == 0x00)
+                        && data[2] == 0x20
+                    {
+                        all_events.push(SequenceEvent {
+                            absolute_tick: accum_tick,
+                            priority: 1,
+                            inner: MidiEngineEvent::RhythmEngineControl {
+                                command: data[1],
+                                mask_lo: data[3],
+                                mask_hi: data[4],
+                            },
+                        });
+                    }
                 }
 
                 let kind = event.kind.to_static();

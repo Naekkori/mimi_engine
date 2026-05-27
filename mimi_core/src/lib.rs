@@ -119,6 +119,12 @@ pub struct AudioPlaybackContext {
     generated_rhythm_notes: Vec<MidiNote>,
     // 다음 연주해야 할 리듬 노트 인덱스
     next_rhythm_note_index: usize,
+    // 포트 A 리듬 변환 채널 뮤트 마스크 (각 비트가 1이면 뮤트)
+    rhythm_mute_mask: u16,
+    // 리듬복원 을 위한 저장
+    saved_rhythm: Rhythm,
+    // 사용자가 수동으로 원곡 재생(리듬변환 꺼짐) 상태를 지정했는지 감지
+    is_user_original: bool,
 }
 
 impl AudioPlaybackContext {
@@ -142,12 +148,21 @@ impl AudioPlaybackContext {
                 }
                 MimiCommand::Stop => {
                     self.current_state = PlayerState::Stopped;
+                    
+                    // 정지 시 원래 사용자가 선택했다가 SysEx 제어로 백업되었던 리듬 복원
+                    if self.saved_rhythm != Rhythm::Original {
+                        self.rhythm_engine.current_rhythm = self.saved_rhythm;
+                        self.saved_rhythm = Rhythm::Original;
+                    }
+                    self.rhythm_mute_mask = 0; // 마스크 초기화
+
                     {
                         // 가드가 살아있는 동안 self를 다른 용도로 쓰지 않도록 스코프 분리
                         let mut status = self.status.lock().unwrap();
                         status.state = PlayerState::Stopped;
                         status.current_time = std::time::Duration::from_secs(0);
                         status.current_tick = 0;
+                        status.current_rhythm = self.rhythm_engine.current_rhythm; // 복원상태 반영
                     }
                     self.elapsed_time_sec = 0.0;
                     self.all_notes_off();
@@ -438,6 +453,9 @@ impl AudioPlaybackContext {
                     self.next_rhythm_note_index = 0;
                 }
                 MimiCommand::SetRhythm(rhythm) => {
+                    // 사용자가 수동으로 지정한 리듬 상태에 필터 기준 대입
+                    self.is_user_original = rhythm == Rhythm::Original;
+
                     // 키 및 리듬 상태 갱신
                     self.rhythm_engine.current_rhythm = rhythm;
                     self.status.lock().unwrap().current_rhythm = rhythm;
@@ -679,6 +697,14 @@ impl AudioPlaybackContext {
                         kind,
                         is_drum_channel: _,
                     } => {
+                        // 포트 A(0번 포트)일 때 뮤트 마스크 필터링 적용 (리듬 변환 모드가 활성화되었을 때만 작동)
+                        if self.rhythm_engine.current_rhythm != Rhythm::Original && port == 0 {
+                            let ch_bit = 1 << channel;
+                            if (self.rhythm_mute_mask & ch_bit) != 0 {
+                                continue;
+                            }
+                        }
+
                         // 리듬변환 작동 중일 때: 멜로디 채널이 아니면 원곡 이벤트 완전 필터링(무시)
                         let is_melody = self.sequencer.melody_channels.contains(&(port, channel));
                         if self.rhythm_engine.current_rhythm != Rhythm::Original && !is_melody {
@@ -813,6 +839,39 @@ impl AudioPlaybackContext {
                         self.status.lock().unwrap().current_tempo = tempo as i32;
                         let _ = self.ui_tx.send(MidiEngineEvent::TempoChange { tempo });
                     }
+                    MidiEngineEvent::RhythmEngineControl { command, mask_lo, mask_hi } => {
+                        // 사용자가 수동으로 리듬변환 꺼짐(Original) 모드를 선택해 놓았다면
+                        // 내부 제어 메시지로 인한 강제 리듬 전환 및 묵음화 필터를 원천 봉쇄(무시)한다.
+                        if self.is_user_original {
+                            continue;
+                        }
+
+                        // 리듬 제어 메세지 처리
+                        // command: 0x01 = 리듬 변환 작동, 0x00 = 리듬 변환 해제
+                        if command == 0x01{
+                            // 리듬변환 작동 명령이 들어왔다면, 리듬엔진을 활성화하고, 기존 리듬을 저장한다
+                            if self.rhythm_engine.current_rhythm != Rhythm::Original {
+                                self.saved_rhythm = self.rhythm_engine.current_rhythm;
+                            }
+                            // 포트 A 뮤트 마스크 와 비활성 상태 설정
+                            self.rhythm_mute_mask = ((mask_hi as u16) << 8) | (mask_lo as u16);
+                            
+                            // 만약 백업된 리듬이 있다면 그것으로 작동하고 없으면 디스코 등 기본리듬
+                            if self.rhythm_engine.current_rhythm == Rhythm::Original {
+                                self.rhythm_engine.current_rhythm = if self.saved_rhythm != Rhythm::Original {
+                                    self.saved_rhythm
+                                } else {
+                                    Rhythm::Disco
+                                };
+                            }
+                        } else if command == 0x00{
+                            // 리듬변환 해제 명령이 들어왔다면, 리듬엔진을 비활성화하고 마스크 초기화
+                            self.rhythm_mute_mask = 0;
+                            if self.rhythm_engine.current_rhythm != Rhythm::Original {
+                                self.rhythm_engine.current_rhythm = Rhythm::Original;
+                            }
+                        }
+                    }
                     other_event => {
                         let _ = self.ui_tx.send(other_event);
                     }
@@ -910,12 +969,21 @@ impl AudioPlaybackContext {
             // 5. 연주가 끝났는지 확인 (모든 이벤트 처리 완료 시)
             if self.sequencer.is_finished() {
                 self.current_state = PlayerState::Stopped;
+
+                // 곡 완료 시 원래 사용자가 선택했다가 SysEx 제어로 백업되었던 리듬 복원
+                if self.saved_rhythm != Rhythm::Original {
+                    self.rhythm_engine.current_rhythm = self.saved_rhythm;
+                    self.saved_rhythm = Rhythm::Original;
+                }
+                self.rhythm_mute_mask = 0; // 마스크 초기화
+
                 {
                     // status 가드가 self 메서드 호출 전에 드롭되도록 스코프 처리
                     let mut status = self.status.lock().unwrap();
                     status.state = PlayerState::Stopped;
                     status.current_tick = 0;
                     status.current_time = std::time::Duration::from_secs(0);
+                    status.current_rhythm = self.rhythm_engine.current_rhythm; // 복원상태 반영
                 }
                 self.elapsed_time_sec = 0.0;
                 self.all_notes_off();
@@ -1060,6 +1128,9 @@ pub fn create_mimi_engine(
         rhythm_engine: RhythmEngine::new(Rhythm::Original),
         generated_rhythm_notes: Vec::new(),
         next_rhythm_note_index: 0,
+        rhythm_mute_mask: 0,
+        saved_rhythm: Rhythm::Original,
+        is_user_original: true,
     };
 
     on_progress(1.0, "엔진 초기화 완료!");
