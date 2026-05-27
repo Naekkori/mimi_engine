@@ -1054,7 +1054,7 @@ pub fn create_mimi_engine(
     sample_rate: f64,
     mut on_progress: impl FnMut(f32, &str),
 ) -> Result<(MimiEngineHandle, AudioPlaybackContext), anyhow::Error> {
-    on_progress(0.05, "엔진 내부 채널 초기화 중...");
+    on_progress(0.05, "Init Engine...");
     let (command_tx, command_rx) = unbounded::<MimiCommand>();
     let (ui_tx, ui_rx) = unbounded::<MidiEngineEvent>();
 
@@ -1073,7 +1073,7 @@ pub fn create_mimi_engine(
     }));
     let status_clone = Arc::clone(&player_status);
 
-    on_progress(0.15, "신디사이저 A 준비 중...");
+    on_progress(0.15, "Init Synth A...");
 
     // fluidlite 합성기 설정 (Synth A & B)
     let settings_a = Settings::new()
@@ -1086,13 +1086,13 @@ pub fn create_mimi_engine(
     let synth_a = Synth::new(settings_a)
         .map_err(|e| anyhow::anyhow!("FluidLite Synth A 생성 실패: {:?}", e))?;
 
-    on_progress(0.20, "사운드폰트 A 로딩 중...");
+    on_progress(0.20, "Load Soundfont A...");
     synth_a.sfload(sf_path, true)
-        .map_err(|e| anyhow::anyhow!("사운드폰트 A 로드 실패: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Load Soundfont A Failed: {:?}", e))?;
 
     synth_a.set_gain(1.0);
 
-    on_progress(0.50, "신디사이저 B 준비 중...");
+    on_progress(0.50, "Init Synth B...");
 
     let settings_b = Settings::new()
         .map_err(|e| anyhow::anyhow!("FluidLite Settings B 생성 실패: {:?}", e))?;
@@ -1104,20 +1104,20 @@ pub fn create_mimi_engine(
     let synth_b = Synth::new(settings_b)
         .map_err(|e| anyhow::anyhow!("FluidLite Synth B 생성 실패: {:?}", e))?;
 
-    on_progress(0.55, "사운드폰트 B 로딩 중...");
+    on_progress(0.55, "Load Soundfont B...");
     synth_b.sfload(sf_path, true)
-        .map_err(|e| anyhow::anyhow!("사운드폰트 B 로드 실패: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Load Soundfont B Failed: {:?}", e))?;
 
     synth_b.set_gain(1.0);
 
-    on_progress(0.85, "미디 시퀀서 초기화 중...");
+    on_progress(0.85, "Init Sequencer...");
 
     let sequencer = MimiSequencer::empty();
     let sequencer_format = sequencer.format;
 
     player_status.lock().unwrap().total_tick = 0;
 
-    on_progress(0.95, "오디오 컨텍스트 구성 중...");
+    on_progress(0.95, "Init Playback Context...");
 
     let playback_context = AudioPlaybackContext {
         sequencer,
@@ -1151,7 +1151,7 @@ pub fn create_mimi_engine(
         user_selected_rhythm: Rhythm::Original,
     };
 
-    on_progress(1.0, "엔진 초기화 완료!");
+    on_progress(1.0, "Engine Initialized!");
 
     let handle = MimiEngineHandle {
         command_tx,
