@@ -121,10 +121,8 @@ pub struct AudioPlaybackContext {
     next_rhythm_note_index: usize,
     // 포트 A 리듬 변환 채널 뮤트 마스크 (각 비트가 1이면 뮤트)
     rhythm_mute_mask: u16,
-    // 리듬복원 을 위한 저장
-    saved_rhythm: Rhythm,
-    // 사용자가 수동으로 원곡 재생(리듬변환 꺼짐) 상태를 지정했는지 감지
-    is_user_original: bool,
+    // 사용자가 UI 등에서 수동으로 선택 및 지정 지정해 놓은 배후 리듬 모드
+    user_selected_rhythm: Rhythm,
 }
 
 impl AudioPlaybackContext {
@@ -149,11 +147,8 @@ impl AudioPlaybackContext {
                 MimiCommand::Stop => {
                     self.current_state = PlayerState::Stopped;
                     
-                    // 정지 시 원래 사용자가 선택했다가 SysEx 제어로 백업되었던 리듬 복원
-                    if self.saved_rhythm != Rhythm::Original {
-                        self.rhythm_engine.current_rhythm = self.saved_rhythm;
-                        self.saved_rhythm = Rhythm::Original;
-                    }
+                    // 정지 시 원래 사용자가 선택했던 리듬 복원
+                    self.rhythm_engine.current_rhythm = self.user_selected_rhythm;
                     self.rhythm_mute_mask = 0; // 마스크 초기화
 
                     {
@@ -453,8 +448,8 @@ impl AudioPlaybackContext {
                     self.next_rhythm_note_index = 0;
                 }
                 MimiCommand::SetRhythm(rhythm) => {
-                    // 사용자가 수동으로 지정한 리듬 상태에 필터 기준 대입
-                    self.is_user_original = rhythm == Rhythm::Original;
+                    // 사용자가 수동 지정한 리듬 보관 유지
+                    self.user_selected_rhythm = rhythm;
 
                     // 키 및 리듬 상태 갱신
                     self.rhythm_engine.current_rhythm = rhythm;
@@ -672,6 +667,7 @@ impl AudioPlaybackContext {
                         self.drum_channels = [[false; 16]; 2];
                         self.drum_channels[0][9] = true;
                         self.drum_channels[1][9] = true;
+                        self.drum_channels[1][15] = true; // 리듬 드럼 격리 전용 채널 활성화 락
 
                         for ch in 0u32..16{
                             let _ = self.synth_a.cc(ch, 0, 0);
@@ -841,35 +837,20 @@ impl AudioPlaybackContext {
                     }
                     MidiEngineEvent::RhythmEngineControl { command, mask_lo, mask_hi } => {
                         // 사용자가 수동으로 리듬변환 꺼짐(Original) 모드를 선택해 놓았다면
-                        // 내부 제어 메시지로 인한 강제 리듬 전환 및 묵음화 필터를 원천 봉쇄(무시)한다.
-                        if self.is_user_original {
+                        // 미디 내부의 자동 리듬변환 SysEx 제어 시그널은 전면 바이패스(무시) 조치한다
+                        if self.user_selected_rhythm == Rhythm::Original {
                             continue;
                         }
 
                         // 리듬 제어 메세지 처리
                         // command: 0x01 = 리듬 변환 작동, 0x00 = 리듬 변환 해제
-                        if command == 0x01{
-                            // 리듬변환 작동 명령이 들어왔다면, 리듬엔진을 활성화하고, 기존 리듬을 저장한다
-                            if self.rhythm_engine.current_rhythm != Rhythm::Original {
-                                self.saved_rhythm = self.rhythm_engine.current_rhythm;
-                            }
-                            // 포트 A 뮤트 마스크 와 비활성 상태 설정
+                        if command == 0x01 {
+                            // 뮤트 마스크에 채널 마킹 적용 (사용자 선택 리듬 가동 시)
                             self.rhythm_mute_mask = ((mask_hi as u16) << 8) | (mask_lo as u16);
-                            
-                            // 만약 백업된 리듬이 있다면 그것으로 작동하고 없으면 디스코 등 기본리듬
-                            if self.rhythm_engine.current_rhythm == Rhythm::Original {
-                                self.rhythm_engine.current_rhythm = if self.saved_rhythm != Rhythm::Original {
-                                    self.saved_rhythm
-                                } else {
-                                    Rhythm::Disco
-                                };
-                            }
-                        } else if command == 0x00{
-                            // 리듬변환 해제 명령이 들어왔다면, 리듬엔진을 비활성화하고 마스크 초기화
-                            self.rhythm_mute_mask = 0;
-                            if self.rhythm_engine.current_rhythm != Rhythm::Original {
-                                self.rhythm_engine.current_rhythm = Rhythm::Original;
-                            }
+                            self.rhythm_engine.current_rhythm = self.user_selected_rhythm;
+                        } else if command == 0x00 {
+                            self.rhythm_mute_mask = 0; // 마스크 초기화
+                            self.rhythm_engine.current_rhythm = Rhythm::Original;
                         }
                     }
                     other_event => {
@@ -896,7 +877,15 @@ impl AudioPlaybackContext {
                     if note.tick <= current_tick {
                         // 생성된 리듬은 무조건 Synth B 포트에서 소리 출력하도록 매핑 (드럼은 드럼전용, 그외는 댄스 셋)
                         let is_drum = note.channel == 9;
-                        let target_channel = note.channel as u32;
+                        
+                        // 내장 리듬의 synth_b 독점 전용 우회 채널 매핑 분리 (음색 실종 충돌 버그 영구 박멸!)
+                        let target_channel: u32 = if is_drum {
+                            15
+                        } else if note.channel == 1 {
+                            14
+                        } else {
+                            13
+                        };
                         
                         // 볼륨 마스킹 및 전이
                         let vel = note.velocity as usize;
@@ -918,11 +907,11 @@ impl AudioPlaybackContext {
                             // 하드웨어 레벨에서 먼저 강제 NoteOff 처리를 해 주어 잔향 중첩과 스택 과부하를 원천 방지한다
                             let _ = self.synth_b.note_off(target_channel, final_key as u32);
                             self.active_notes.retain(|&(p, ch, n)| {
-                                !(p == 1 && ch == note.channel && n == final_key)
+                                !(p == 1 && ch == target_channel as u8 && n == final_key)
                             });
 
                             // 동적 노트 추적 등록
-                            self.active_notes.push((1, note.channel, final_key));
+                            self.active_notes.push((1, target_channel as u8, final_key));
 
                             // 해당되는 반주 악기 패치(Program Change) 강제 맵핑 적용
                             if let Some(rhythm_pattern) = self.rhythm_engine.pattern_library.get(&self.rhythm_engine.current_rhythm) {
@@ -933,7 +922,17 @@ impl AudioPlaybackContext {
                                         crate::rhythm_engine::TrackType::Accompaniment => note.channel == 2,
                                     }
                                 }) {
+                                    if is_drum {
+                                        let _ = self.synth_b.bank_select(target_channel, 128);
+                                    } else {
+                                        let _ = self.synth_b.bank_select(target_channel, 0);
+                                    }
                                     let _ = self.synth_b.program_change(target_channel, track.instrument_program as u32);
+
+                                    // 원곡 CC가 내장 리듬의 볼륨/정렬 등을 난도질하지 못하도록 기본 제어값 실시간 강제 고정 락인!
+                                    let _ = self.synth_b.cc(target_channel, 7, 100);  // 채널 볼륨 100 고정 강경 탑재
+                                    let _ = self.synth_b.cc(target_channel, 11, 127); // Expression 127 고정
+                                    let _ = self.synth_b.cc(target_channel, 10, 64);  // Pan Center 고정
                                 }
                             }
 
@@ -942,7 +941,7 @@ impl AudioPlaybackContext {
                         } else {
                             // Note-Off (velocity = 0) 처리
                             self.active_notes.retain(|&(p, ch, n)| {
-                                !(p == 1 && ch == note.channel && n == final_key)
+                                !(p == 1 && ch == target_channel as u8 && n == final_key)
                             });
                             let _ = self.synth_b.note_off(target_channel, final_key as u32);
                         }
@@ -970,11 +969,8 @@ impl AudioPlaybackContext {
             if self.sequencer.is_finished() {
                 self.current_state = PlayerState::Stopped;
 
-                // 곡 완료 시 원래 사용자가 선택했다가 SysEx 제어로 백업되었던 리듬 복원
-                if self.saved_rhythm != Rhythm::Original {
-                    self.rhythm_engine.current_rhythm = self.saved_rhythm;
-                    self.saved_rhythm = Rhythm::Original;
-                }
+                // 곡 완료 시 원래 사용자가 지정한 수동선택 리듬 복원
+                self.rhythm_engine.current_rhythm = self.user_selected_rhythm;
                 self.rhythm_mute_mask = 0; // 마스크 초기화
 
                 {
@@ -1122,6 +1118,7 @@ pub fn create_mimi_engine(
             let mut dc = [[false; 16]; 2];
             dc[0][9] = true;
             dc[1][9] = true;
+            dc[1][15] = true; // 15번 체널 드럼 등록 (리듬 엔진 전용 우회 채널)
             dc
         },
         channel_velocities: [[0u8; 16]; 2],
@@ -1129,8 +1126,7 @@ pub fn create_mimi_engine(
         generated_rhythm_notes: Vec::new(),
         next_rhythm_note_index: 0,
         rhythm_mute_mask: 0,
-        saved_rhythm: Rhythm::Original,
-        is_user_original: true,
+        user_selected_rhythm: Rhythm::Original,
     };
 
     on_progress(1.0, "엔진 초기화 완료!");
