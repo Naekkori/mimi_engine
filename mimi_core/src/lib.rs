@@ -483,133 +483,7 @@ impl AudioPlaybackContext {
                     } else {
                         self.generated_rhythm_notes.clear();
                         self.next_rhythm_note_index = 0;
-
-                        // [오리지널 복원] 원곡 모드로 변경될 때, 현재 틱(Tick) 이전까지 생성되었던
-                        // 원곡의 프로그램 정보, 컨트롤러, 뱅크 상태를 시퀀서 타임라인 역추적해서 완벽 복구
-                        #[derive(Clone, Copy)]
-                        struct ChannelSetup {
-                            program: Option<u8>,
-                            bank_msb: u8,
-                            bank_lsb: u8,
-                            volume: Option<u8>,
-                            pan: Option<u8>,
-                            expression: Option<u8>,
-                            pitch_bend: Option<u16>,
-                            pitch_bend_range: Option<u8>,
-                        }
-
-                        let mut channel_presets = [[ChannelSetup {
-                            program: None,
-                            bank_msb: 0,
-                            bank_lsb: 0,
-                            volume: None,
-                            pan: None,
-                            expression: None,
-                            pitch_bend: None,
-                            pitch_bend_range: None,
-                        }; 16]; 2];
-
-                        // 현재 재생 틱 이전의 미디 설정 이벤트 스캔
-                        let current_index = self.sequencer.current_event_index;
-                        for i in 0..current_index {
-                            let event = &self.sequencer.event[i];
-                            match &event.inner {
-                                MidiEngineEvent::MidiReset => {
-                                    channel_presets = [[ChannelSetup {
-                                        program: None,
-                                        bank_msb: 0,
-                                        bank_lsb: 0,
-                                        volume: None,
-                                        pan: None,
-                                        expression: None,
-                                        pitch_bend: None,
-                                        pitch_bend_range: None,
-                                    }; 16]; 2];
-                                }
-                                MidiEngineEvent::MidiPlay { port, channel, is_drum_channel: _, kind } => {
-                                    let p = (*port).min(1) as usize;
-                                    let ch = (*channel).min(15) as usize;
-                                    if let TrackEventKind::Midi { message, .. } = kind {
-                                        match message {
-                                            midly::MidiMessage::Controller { controller, value } => {
-                                                let cc = controller.as_int();
-                                                let val = value.as_int();
-                                                match cc {
-                                                    0 => channel_presets[p][ch].bank_msb = val,
-                                                    32 => channel_presets[p][ch].bank_lsb = val,
-                                                    7 => channel_presets[p][ch].volume = Some(val),
-                                                    10 => channel_presets[p][ch].pan = Some(val),
-                                                    11 => channel_presets[p][ch].expression = Some(val),
-                                                    // RPN Pitch Bend Range의 Data Entry MSB(CC 6) 추적
-                                                    6 => channel_presets[p][ch].pitch_bend_range = Some(val),
-                                                    _ => {}
-                                                }
-                                            }
-                                            midly::MidiMessage::ProgramChange { program } => {
-                                                channel_presets[p][ch].program = Some(program.as_int());
-                                            }
-                                            midly::MidiMessage::PitchBend { bend } => {
-                                                let value = (bend.as_int() as i32 + 8192).clamp(0, 16383) as u16;
-                                                channel_presets[p][ch].pitch_bend = Some(value);
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                                MidiEngineEvent::SetDrumChannel { port, channel, is_drum } => {
-                                    let p = (*port).min(1) as usize;
-                                    let ch = (*channel).min(15) as usize;
-                                    self.drum_channels[p][ch] = *is_drum;
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        // 역추적한 프리셋들을 실제 신디사이저에 동기화
-                        for p in 0..2 {
-                            let synth = if p == 0 { &mut self.synth_a } else { &mut self.synth_b };
-                            for ch in 0..16 {
-                                let setup = &channel_presets[p][ch];
-                                let is_drum = self.drum_channels[p][ch];
-
-                                // 프로그램 변경 역추적 데이터가 실존하는 경우에만 뱅크/프로그램 지정
-                                if let Some(prog) = setup.program {
-                                    let resolved_bank: u32 = if is_drum {
-                                        128 << 7
-                                    } else {
-                                        match self.midi_format {
-                                            MidiFormat::GM => 0,
-                                            MidiFormat::GS => 0,
-                                            MidiFormat::XG => (setup.bank_msb as u32) << 7,
-                                        }
-                                    };
-                                    if is_drum {
-                                        let _ = synth.bank_select(ch as u32, 128);
-                                    } else {
-                                        let _ = synth.bank_select(ch as u32, resolved_bank >> 7);
-                                        let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
-                                    }
-                                    let _ = synth.program_change(ch as u32, prog as u32);
-                                }
-
-                                if let Some(vol) = setup.volume {
-                                    let _ = synth.cc(ch as u32, 7, vol as u32);
-                                }
-                                if let Some(pan) = setup.pan {
-                                    let _ = synth.cc(ch as u32, 10, pan as u32);
-                                }
-                                if let Some(exp) = setup.expression {
-                                    let _ = synth.cc(ch as u32, 11, exp as u32);
-                                }
-                                // RPN 피치 벤드 범위 복원
-                                if let Some(pbr) = setup.pitch_bend_range {
-                                    let _ = synth.pitch_wheel_sens(ch as u32, pbr as u32);
-                                }
-                                if let Some(pb) = setup.pitch_bend {
-                                    let _ = synth.pitch_bend(ch as u32, pb as u32);
-                                }
-                            }
-                        }
+                        self.restore_original_states();
                     }
                 }
             }
@@ -623,6 +497,135 @@ impl AudioPlaybackContext {
                 let _ = self.synth_a.note_off(ch as u32, note as u32);
             }else{
                 let _ = self.synth_b.note_off(ch as u32, note as u32);
+            }
+        }
+    }
+
+    /// [오리지널 복원] 원곡 모드로 변경될 때, 현재 틱(Tick) 이전까지 생성되었던
+    /// 원곡의 프로그램 정보, 컨트롤러, 뱅크 상태를 시퀀서 타임라인 역추적해서 완벽 복구
+    fn restore_original_states(&mut self) {
+        #[derive(Clone, Copy)]
+        struct ChannelSetup {
+            program: Option<u8>,
+            bank_msb: u8,
+            bank_lsb: u8,
+            volume: Option<u8>,
+            pan: Option<u8>,
+            expression: Option<u8>,
+            pitch_bend: Option<u16>,
+            pitch_bend_range: Option<u8>,
+        }
+
+        let mut channel_presets = [[ChannelSetup {
+            program: None,
+            bank_msb: 0,
+            bank_lsb: 0,
+            volume: None,
+            pan: None,
+            expression: None,
+            pitch_bend: None,
+            pitch_bend_range: None,
+        }; 16]; 2];
+
+        // 현재 재생 틱 이전의 미디 설정 이벤트 스캔
+        let current_index = self.sequencer.current_event_index;
+        for i in 0..current_index {
+            let event = &self.sequencer.event[i];
+            match &event.inner {
+                MidiEngineEvent::MidiReset => {
+                    channel_presets = [[ChannelSetup {
+                        program: None,
+                        bank_msb: 0,
+                        bank_lsb: 0,
+                        volume: None,
+                        pan: None,
+                        expression: None,
+                        pitch_bend: None,
+                        pitch_bend_range: None,
+                    }; 16]; 2];
+                }
+                MidiEngineEvent::MidiPlay { port, channel, is_drum_channel: _, kind } => {
+                    let p = (*port).min(1) as usize;
+                    let ch = (*channel).min(15) as usize;
+                    if let TrackEventKind::Midi { message, .. } = kind {
+                        match message {
+                            midly::MidiMessage::Controller { controller, value } => {
+                                let cc = controller.as_int();
+                                let val = value.as_int();
+                                match cc {
+                                    0 => channel_presets[p][ch].bank_msb = val,
+                                    32 => channel_presets[p][ch].bank_lsb = val,
+                                    7 => channel_presets[p][ch].volume = Some(val),
+                                    10 => channel_presets[p][ch].pan = Some(val),
+                                    11 => channel_presets[p][ch].expression = Some(val),
+                                    // RPN Pitch Bend Range의 Data Entry MSB(CC 6) 추적
+                                    6 => channel_presets[p][ch].pitch_bend_range = Some(val),
+                                    _ => {}
+                                }
+                            }
+                            midly::MidiMessage::ProgramChange { program } => {
+                                channel_presets[p][ch].program = Some(program.as_int());
+                            }
+                            midly::MidiMessage::PitchBend { bend } => {
+                                let value = (bend.as_int() as i32 + 8192).clamp(0, 16383) as u16;
+                                channel_presets[p][ch].pitch_bend = Some(value);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                MidiEngineEvent::SetDrumChannel { port, channel, is_drum } => {
+                    let p = (*port).min(1) as usize;
+                    let ch = (*channel).min(15) as usize;
+                    self.drum_channels[p][ch] = *is_drum;
+                }
+                _ => {}
+            }
+        }
+
+        // 역추적한 프리셋들을 실제 신디사이저에 동기화
+        for p in 0..2 {
+            let synth = if p == 0 { &mut self.synth_a } else { &mut self.synth_b };
+            for ch in 0..16 {
+                let setup = &channel_presets[p][ch];
+                let is_drum = self.drum_channels[p][ch];
+
+                // 프로그램 변경 역추적 데이터가 실존하는 경우에만 뱅크/프로그램 지정
+                if let Some(prog) = setup.program {
+                    let resolved_bank: u32 = if is_drum {
+                        128 << 7
+                    } else {
+                        match self.midi_format {
+                            MidiFormat::GM => 0,
+                            MidiFormat::GS => 0,
+                            MidiFormat::XG => (setup.bank_msb as u32) << 7,
+                        }
+                    };
+                    if is_drum {
+                        let _ = synth.bank_select(ch as u32, 128);
+                    } else {
+                        let _ = synth.bank_select(ch as u32, resolved_bank >> 7);
+                        let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
+                    }
+                    let _ = synth.program_change(ch as u32, prog as u32);
+                }
+
+                if let Some(vol) = setup.volume {
+                    let _ = synth.cc(ch as u32, 7, vol as u32);
+                }
+                if let Some(pan) = setup.pan {
+                    let _ = synth.cc(ch as u32, 10, pan as u32);
+                }
+                if let Some(exp) = setup.expression {
+                    let _ = synth.cc(ch as u32, 11, exp as u32);
+                }
+                // RPN 피치 벤드 범위 복원
+                if let Some(pbr) = setup.pitch_bend_range {
+                    let _ = synth.pitch_wheel_sens(ch as u32, pbr as u32);
+                }
+                if let Some(pb) = setup.pitch_bend {
+                    let _ = synth.pitch_bend(ch as u32, pb as u32);
+                }
             }
         }
     }
@@ -859,6 +862,17 @@ impl AudioPlaybackContext {
                         } else if command == 0x00 {
                             self.rhythm_mute_mask = 0; // 마스크 초기화
                             self.rhythm_engine.current_rhythm = Rhythm::Original;
+                            
+                            // 실시간으로 이전 음 찌꺼기 끄기 (Note Stuck 방지)
+                            for port in 0..2 {
+                                let synth = if port == 0 { &self.synth_a } else { &self.synth_b };
+                                for ch in 0..16 {
+                                    let _ = synth.cc(ch as u32, 123, 0); // All Notes Off
+                                    let _ = synth.cc(ch as u32, 120, 0); // All Sound Off
+                                }
+                            }
+                            self.active_notes.clear();
+                            self.restore_original_states();
                         }
                     }
                     other_event => {
