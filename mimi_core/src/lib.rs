@@ -387,6 +387,9 @@ impl AudioPlaybackContext {
                     self.elapsed_time_sec = 0.0;
                     self.all_notes_off();
 
+                    // 곡 로드 시 채널 마스킹 필터 및 원곡 리듬 상태 강제 초기화
+                    self.rhythm_mute_mask = 0;
+
                     // 1. 신디사이저 하드웨어 완벽 초기화 (이전 곡 잔재 제거)
                     let _ = self.synth_a.system_reset();
                     let _ = self.synth_b.system_reset();
@@ -569,23 +572,25 @@ impl AudioPlaybackContext {
                                 let setup = &channel_presets[p][ch];
                                 let is_drum = self.drum_channels[p][ch];
 
-                                let resolved_bank: u32 = if is_drum {
-                                    128 << 7
-                                } else {
-                                    match self.midi_format {
-                                        MidiFormat::GM => 0,
-                                        MidiFormat::GS => 0,
-                                        MidiFormat::XG => (setup.bank_msb as u32) << 7,
+                                // 프로그램 변경 역추적 데이터가 실존하는 경우에만 뱅크/프로그램 지정
+                                if let Some(prog) = setup.program {
+                                    let resolved_bank: u32 = if is_drum {
+                                        128 << 7
+                                    } else {
+                                        match self.midi_format {
+                                            MidiFormat::GM => 0,
+                                            MidiFormat::GS => 0,
+                                            MidiFormat::XG => (setup.bank_msb as u32) << 7,
+                                        }
+                                    };
+                                    if is_drum {
+                                        let _ = synth.bank_select(ch as u32, 128);
+                                    } else {
+                                        let _ = synth.bank_select(ch as u32, resolved_bank >> 7);
+                                        let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
                                     }
-                                };
-                                let prog = setup.program.unwrap_or(0);
-                                if is_drum {
-                                    let _ = synth.bank_select(ch as u32, 128);
-                                } else {
-                                    let _ = synth.bank_select(ch as u32, resolved_bank >> 7);
-                                    let _ = synth.cc(ch as u32, 32, setup.bank_lsb as u32);
+                                    let _ = synth.program_change(ch as u32, prog as u32);
                                 }
-                                let _ = synth.program_change(ch as u32, prog as u32);
 
                                 if let Some(vol) = setup.volume {
                                     let _ = synth.cc(ch as u32, 7, vol as u32);
@@ -704,7 +709,10 @@ impl AudioPlaybackContext {
                         // 리듬변환 작동 중일 때: 멜로디 채널이 아니면 원곡 이벤트 완전 필터링(무시)
                         let is_melody = self.sequencer.melody_channels.contains(&(port, channel));
                         if self.rhythm_engine.current_rhythm != Rhythm::Original && !is_melody {
-                            continue;
+                            // 수신 뮤트 필터 마스크가 비어있을 때만 기존 논리대로 멜로디 제외 채널들을 일괄 차단
+                            if self.rhythm_mute_mask == 0 {
+                                continue;
+                            }
                         }
 
                         // 포트 범위 설정: SMF 포트 번호 그대로 맵핑하되 안전하게 min(1) 적용
