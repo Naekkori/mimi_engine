@@ -617,12 +617,14 @@ fn render(frame: &mut Frame, app: &mut App) {
                     spans.push(Span::styled(key_str.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
                 }
                 spans.push(Span::styled(desc.to_string(), Style::default().fg(Color::Gray)));
+                // 구분자
+                spans.push(Span::styled(" | ", Style::default().fg(Color::White)));
             };
 
-            add_guide(&mut spans, " ↑/↓", ": Move  | ", 'U'); // Up/Down highlight handled separately
+            add_guide(&mut spans, " ↑/↓", ": Move", 'U'); // Up/Down highlight handled separately
             if is_hl('D') { spans[0] = Span::styled(" ↑/↓", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
-            add_guide(&mut spans, "Enter", ": Play  | ", 'E');
-            add_guide(&mut spans, "ESC", ": PlayList Toggle |", 'C');
+            add_guide(&mut spans, "Enter", ": Play", 'E');
+            add_guide(&mut spans, "ESC", ": PlayList Toggle", 'C');
  
             let help_text = Paragraph::new(Line::from(spans))
                 .block(Block::bordered().title(" Shortcut Guide ".bold()).border_style(Style::default().fg(Color::Blue)))
@@ -815,14 +817,16 @@ fn render(frame: &mut Frame, app: &mut App) {
                     spans.push(Span::styled(key_str.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
                 }
                 spans.push(Span::styled(desc.to_string(), Style::default().fg(Color::Gray)));
+                // 구분자
+                spans.push(Span::styled(" | ", Style::default().fg(Color::White)));
             };
 
-            add_guide(&mut spans, " space", ": Pause  | ", ' ');
-            add_guide(&mut spans, "s", ": Stop  | ", 's');
-            add_guide(&mut spans, "ESC", ": PlayList Toggle |", 'C');
-            add_guide(&mut spans, ",/.", ": Key Adjust  | ", ','); // , 또는 .
-            add_guide(&mut spans, "[/]", ": Tempo  | ", '['); // [ 또는 ]
-            add_guide(&mut spans, "-/=", ": Volume  | ", '-'); // - 또는 =
+            add_guide(&mut spans, " space", ": Pause", ' ');
+            add_guide(&mut spans, "s", ": Stop", 's');
+            add_guide(&mut spans, "ESC", ": PlayList Toggle", 'C');
+            add_guide(&mut spans, ",/.", ": Key Adjust", ','); // , 또는 .
+            add_guide(&mut spans, "[/]", ": Tempo", '['); // [ 또는 ]
+            add_guide(&mut spans, "-/=", ": Volume", '-'); // - 또는 =
             add_guide(&mut spans, "r", ": Rhythm Change", 'r');
 
             // ,/. 이나 [/] 와 같은 한 그룹 안에서 둘 중 하나만 매칭되어도 불이 들어오게 보완함
