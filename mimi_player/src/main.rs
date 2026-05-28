@@ -511,8 +511,8 @@ fn render(frame: &mut Frame, app: &mut App) {
     let version = env!("CARGO_PKG_VERSION");
     let block = Block::bordered()
         .title_top(Line::from(format!("MIMI PLAYER - {}", version)).centered())
-        .title_bottom("↑/↓: Select | Enter: Play | ")
-        .title_bottom("Esc: FileList | <space>: Play/Pause | <s>: Stop | ,/.: Transpose | [/]: Tempo | ←/→: Seek | -/=: Volume");
+        .title_bottom("↑/↓: Select | <Enter>: Enter Play | ")
+        .title_bottom("<Esc>: FileList | <space>: Play/Pause | <s>: Stop | ,/.: Transpose | [/]: Tempo | ←/→: Seek | -/=: Volume");
 
     let area = frame.area();
 
