@@ -56,7 +56,10 @@ struct App {
     seek_bar_rect: ratatui::layout::Rect,
 
     // 리스트 토글
-    browsing_toggle: bool
+    browsing_toggle: bool,
+
+    // 실시간 하이라이트용 마지막 입력 키 (키 문자, 입력 시간)
+    last_key: Option<(char, std::time::Instant)>,
 }
 
 impl App {
@@ -87,6 +90,7 @@ impl App {
             loading_rx: None,
             seek_bar_rect: ratatui::layout::Rect::default(),
             browsing_toggle: true,
+            last_key: None,
         }
     }
 }
@@ -114,7 +118,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
     // 루트 assets 디렉토리 존재 확인
     if !std::path::Path::new(assets_path).exists() {
         let _ = fs::create_dir(assets_path);
-        return Err(eyre!("Assets 디렉토리를 찾을 수 없음: {}", assets_path));
+        return Err(eyre!("Assets directory not found: {}", assets_path));
     }
 
     while let Some(current_dir) = stack.pop() {
@@ -218,6 +222,8 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         continue;
                     }
 
+                    let mut pressed_char = None;
+
                     match key.code {
                         event::KeyCode::Up | event::KeyCode::Down
                             if matches!(app.state, AppState::Loading(_, _)) =>
@@ -226,6 +232,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
 
                         event::KeyCode::Up => {
+                            pressed_char = Some('U');
                             if app.selected_index > 0 {
                                 app.selected_index -= 1;
                                 app.list_state.select(Some(app.selected_index));
@@ -233,6 +240,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             }
                         }
                         event::KeyCode::Down => {
+                            pressed_char = Some('D');
                             if !app.file_list.is_empty() && app.selected_index < app.file_list.len() - 1
                             {
                                 app.selected_index += 1;
@@ -241,6 +249,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             }
                         }
                         event::KeyCode::Enter => {
+                            pressed_char = Some('E');
                             // 이미 재생중이면 무시
                             if matches!(app.state, AppState::Playing) {
                                 continue;
@@ -264,6 +273,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 재생 제어
                         event::KeyCode::Char(' ') => {
+                            pressed_char = Some(' ');
                             if let Some(handle) = &app.engine {
                                 match app.engine_status.state {
                                     PlayerState::Stopped | PlayerState::Paused => {
@@ -282,6 +292,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             }
                         }
                         event::KeyCode::Char('s') => {
+                            pressed_char = Some('s');
                             if let Some(handle) = &app.engine {
                                 if app.engine_status.state != PlayerState::Stopped {
                                     if handle.send_command(MimiCommand::Stop).is_ok() {
@@ -293,6 +304,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 리듬 변환 버튼 순환 트리거 ('r')
                         event::KeyCode::Char('r') => {
+                            pressed_char = Some('r');
                             if let Some(handle) = &app.engine {
                                 let next_rhythm = match app.engine_status.current_rhythm {
                                     Rhythm::Original => Rhythm::Disco,
@@ -311,6 +323,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 키(음정) 내림
                         event::KeyCode::Char(',') => {
+                            pressed_char = Some(',');
                             if let Some(handle) = &app.engine {
                                 let new_key = (app.engine_status.key - 1).max(KEY_MIN);
                                 handle.send_command(MimiCommand::SetKey(new_key)).ok();
@@ -319,6 +332,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 키(음정) 올림
                         event::KeyCode::Char('.') => {
+                            pressed_char = Some('.');
                             if let Some(handle) = &app.engine {
                                 let new_key = (app.engine_status.key + 1).min(KEY_MAX);
                                 handle.send_command(MimiCommand::SetKey(new_key)).ok();
@@ -327,6 +341,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 템포 내림
                         event::KeyCode::Char('[') => {
+                            pressed_char = Some('[');
                             if let Some(handle) = &app.engine {
                                 let new_tempo = (app.engine_status.tempo - 0.1).max(TEMPO_MIN);
                                 handle.send_command(MimiCommand::SetTempo(new_tempo)).ok();
@@ -335,6 +350,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 템포 올림
                         event::KeyCode::Char(']') => {
+                            pressed_char = Some(']');
                             if let Some(handle) = &app.engine {
                                 let new_tempo = (app.engine_status.tempo + 0.1).min(TEMPO_MAX);
                                 handle.send_command(MimiCommand::SetTempo(new_tempo)).ok();
@@ -343,6 +359,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 볼륨 내림
                         event::KeyCode::Char('-') => {
+                            pressed_char = Some('-');
                             if let Some(handle) = &app.engine {
                                 let new_vol =
                                     app.engine_status.volume.saturating_sub(5).max(VOLUME_MIN);
@@ -352,6 +369,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 볼륨 올림
                         event::KeyCode::Char('=') => {
+                            pressed_char = Some('=');
                             if let Some(handle) = &app.engine {
                                 let new_vol =
                                     app.engine_status.volume.saturating_add(5).min(VOLUME_MAX);
@@ -361,6 +379,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 이동(Seek) <- / ->
                         event::KeyCode::Left => {
+                            pressed_char = Some('L');
                             if let Some(handle) = &app.engine {
                                 if app.engine_status.current_tick > 0 {
                                     let amount = if key.modifiers.contains(event::KeyModifiers::SHIFT) {
@@ -381,6 +400,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             needs_redraw = true;
                         }
                         event::KeyCode::Right => {
+                            pressed_char = Some('R');
                             if let Some(handle) = &app.engine {
                                 if app.engine_status.current_tick < app.engine_status.total_tick {
                                     let amount = if key.modifiers.contains(event::KeyModifiers::SHIFT) {
@@ -402,6 +422,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         // 리스트로 돌아가기 토글 (선택 바 초기화 등은 안함)
                         event::KeyCode::Esc => {
+                            pressed_char = Some('C');
                             if !app.browsing_toggle{
                               app.state = AppState::Browsing;  
                             }else {
@@ -411,6 +432,10 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             needs_redraw = true;
                         }
                         _ => {}
+                    }
+
+                    if let Some(ch) = pressed_char {
+                        app.last_key = Some((ch, std::time::Instant::now()));
                     }
                 }
                 event::Event::Mouse(mouse_event) => {
@@ -458,6 +483,18 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                 if changed {
                     needs_redraw = true;
                 }
+            }
+        }
+
+        // 키 하이라이트 감쇠 타이머 체크 및 리드로우 요청
+        if let Some((_, time)) = app.last_key {
+            if time.elapsed().as_millis() < 300 {
+                // 하이라이트 기간 동안은 계속 화면 갱신을 강제함
+                needs_redraw = true;
+            } else {
+                // 300ms를 초과하면 하이라이팅 소멸 및 마지막으로 화면 한번 갱신 후 리셋
+                app.last_key = None;
+                needs_redraw = true;
             }
         }
 
@@ -509,12 +546,22 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
 
 fn render(frame: &mut Frame, app: &mut App) {
     let version = env!("CARGO_PKG_VERSION");
-    let block = Block::bordered()
-        .title_top(Line::from(format!("MIMI PLAYER - {}", version)).centered())
-        .title_bottom("↑/↓: Select | <Enter>: Enter Play | ")
-        .title_bottom("<Esc>: FileList | <space>: Play/Pause | <s>: Stop | ,/.: Transpose | [/]: Tempo | ←/→: Seek | -/=: Volume");
+    
+    // 전체 레이아웃을 메인 영역과 하단 도움말 영역으로 나눔
+    use ratatui::layout::{Constraint, Direction, Layout};
+    let global_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(3), // 도움말 영역 고정 크기 할당
+        ])
+        .split(frame.area());
 
-    let area = frame.area();
+    let main_area = global_layout[0];
+    let help_area = global_layout[1];
+
+    let block = Block::bordered()
+        .title_top(Line::from(format!("MIMI PLAYER - {}", version)).centered());
 
     match &app.state {
         AppState::Browsing => {
@@ -538,23 +585,51 @@ fn render(frame: &mut Frame, app: &mut App) {
                 )
                 .highlight_symbol("> ");
 
-            frame.render_stateful_widget(list, area, &mut app.list_state);
+            frame.render_stateful_widget(list, main_area, &mut app.list_state);
 
             // 스크롤바 렌더링
             frame.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("↑"))
                     .end_symbol(Some("↓")),
-                area.inner(ratatui::layout::Margin {
+                main_area.inner(ratatui::layout::Margin {
                     vertical: 1,
                     horizontal: 0,
                 }),
                 &mut ScrollbarState::new(app.file_list.len()).position(app.selected_index),
             );
+
+            // 도움말 박스 렌더링
+            let mut spans = Vec::new();
+            
+            let is_hl = |c: char| -> bool {
+                if let Some((lc, _)) = app.last_key {
+                    lc == c
+                } else {
+                    false
+                }
+            };
+
+            let add_guide = |spans: &mut Vec<Span>, key_str: &str, desc: &str, highlight_key: char| {
+                if is_hl(highlight_key) {
+                    spans.push(Span::styled(key_str.to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+                } else {
+                    spans.push(Span::styled(key_str.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+                }
+                spans.push(Span::styled(desc.to_string(), Style::default().fg(Color::Gray)));
+            };
+
+            add_guide(&mut spans, " ↑/↓", ": Move  | ", 'U'); // Up/Down highlight handled separately
+            if is_hl('D') { spans[0] = Span::styled(" ↑/↓", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
+            add_guide(&mut spans, "Enter", ": Play  | ", 'E');
+            add_guide(&mut spans, "ESC", ": PlayList Toggle |", 'C');
+ 
+            let help_text = Paragraph::new(Line::from(spans))
+                .block(Block::bordered().title(" Shortcut Guide ".bold()).border_style(Style::default().fg(Color::Blue)))
+                .style(Style::default().fg(Color::Gray));
+            frame.render_widget(help_text, help_area);
         }
         AppState::Playing => {
-            use ratatui::layout::{Constraint, Direction, Layout};
-
             let outer = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -562,9 +637,9 @@ fn render(frame: &mut Frame, app: &mut App) {
                     Constraint::Min(1),    // 레벨 미터 영역
                     Constraint::Length(3), // 음악 진행바 영역
                 ])
-                .split(block.inner(area));
+                .split(block.inner(main_area));
 
-            frame.render_widget(block.title(" Playback Info ".bold()), area);
+            frame.render_widget(block.title(" Playback Info ".bold()), main_area);
 
             let info_text = vec![
                 Line::from(vec![
@@ -721,10 +796,48 @@ fn render(frame: &mut Frame, app: &mut App) {
                     .ratio(progress),
                 outer[2],
             );
+
+            // 재생 중일 때의 하단 도움말 박스 렌더링
+            let mut spans = Vec::new();
+
+            let is_hl = |c: char| -> bool {
+                if let Some((lc, _)) = app.last_key {
+                    lc == c
+                } else {
+                    false
+                }
+            };
+
+            let add_guide = |spans: &mut Vec<Span>, key_str: &str, desc: &str, highlight_key: char| {
+                if is_hl(highlight_key) {
+                    spans.push(Span::styled(key_str.to_string(), Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)));
+                } else {
+                    spans.push(Span::styled(key_str.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+                }
+                spans.push(Span::styled(desc.to_string(), Style::default().fg(Color::Gray)));
+            };
+
+            add_guide(&mut spans, " space", ": Pause  | ", ' ');
+            add_guide(&mut spans, "s", ": Stop  | ", 's');
+            add_guide(&mut spans, "ESC", ": PlayList Toggle |", 'C');
+            add_guide(&mut spans, ",/.", ": Key Adjust  | ", ','); // , 또는 .
+            add_guide(&mut spans, "[/]", ": Tempo  | ", '['); // [ 또는 ]
+            add_guide(&mut spans, "-/=", ": Volume  | ", '-'); // - 또는 =
+            add_guide(&mut spans, "r", ": Rhythm Change", 'r');
+
+            // ,/. 이나 [/] 와 같은 한 그룹 안에서 둘 중 하나만 매칭되어도 불이 들어오게 보완함
+            if is_hl('.') { spans[6] = Span::styled(",/.", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
+            if is_hl(']') { spans[8] = Span::styled("[/]", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
+            if is_hl('=') { spans[10] = Span::styled("-/=", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
+
+            let help_text = Paragraph::new(Line::from(spans))
+                .block(Block::bordered().title(" Shortcut Guide ".bold()).border_style(Style::default().fg(Color::Blue)))
+                .style(Style::default().fg(Color::Gray));
+            frame.render_widget(help_text, help_area);
         }
         AppState::Loading(progress, status) => {
             // 로딩 화면 및 로딩 바
-            let center_area = centered_rect(60, 20, area);
+            let center_area = centered_rect(60, 20, main_area);
             let progress_ratio = progress.clamp(0.0, 1.0);
             let loader = Gauge::default()
                 .block(Block::bordered().title(format!(" Loading: {} ", status).bold()))
@@ -732,6 +845,12 @@ fn render(frame: &mut Frame, app: &mut App) {
                 .ratio(progress_ratio);
 
             frame.render_widget(loader, center_area);
+
+            // 로딩 중일 때 빈 하단 도움말 영역 처리 (박스 디자인 유지)
+            let help_text = Paragraph::new(" Initializing, please wait a moment...")
+                .block(Block::bordered().title(" Shortcut Guide ".bold()).border_style(Style::default().fg(Color::Blue)))
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(help_text, help_area);
         }
     }
 }
