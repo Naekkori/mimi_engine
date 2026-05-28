@@ -6,4 +6,3 @@ edition = "2024"
 [dependencies]
 cpal = "0.17.3"
 mimi_core = { path = "../mimi_core" }
-msgbox = "0.7.0"
