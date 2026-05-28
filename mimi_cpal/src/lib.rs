@@ -41,7 +41,7 @@ pub fn spawn_mimi_engine(
     let (handle, mut context) = create_mimi_engine(sf_path, sample_rate, |p, msg| {
         on_progress(p * 0.9 + 0.05, msg);
     }).map_err(|e| {
-        let msg = format!("MIMI engine initialization failed: {}", e);
+        let msg = format!("{}", e);
         msg
     })?;
 

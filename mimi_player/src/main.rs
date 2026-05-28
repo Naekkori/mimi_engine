@@ -154,7 +154,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                 mimi_cpal::spawn_mimi_engine(&sf_path_str, move |p, msg| {
                     let _ = tx_prog.send(LoadingEvent::Progress(p, msg.to_string()));
                 })
-                .map_err(|e| format!("엔진 초기 생성 실패: {:?}", e))?;
+                .map_err(|e| format!("Engine initialization failed, {}", e.to_string()))?;
             Ok((handle, stream))
         };
 
