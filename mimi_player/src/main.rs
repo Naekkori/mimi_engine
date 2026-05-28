@@ -195,10 +195,9 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             break;
                         }
                         LoadingEvent::Error(err) => {
-                            eprintln!("엔진 로딩 실패: {err}");
-                            app.state = AppState::Browsing;
-                            app.loading_rx = None;
-                            break;
+                            // 로딩 실패 시 터미널을 복구한 뒤 에러를 반환하여 안전하게 강제 종료
+                            ratatui::restore();
+                            return Err(eyre!("엔진 로딩 실패: {}", err));
                         }
                     }
                 }
