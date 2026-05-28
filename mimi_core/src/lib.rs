@@ -1058,6 +1058,24 @@ pub fn create_mimi_engine(
     let (command_tx, command_rx) = unbounded::<MimiCommand>();
     let (ui_tx, ui_rx) = unbounded::<MidiEngineEvent>();
 
+    // fluidlite 합성기의 콘솔/stderr 로깅 비활성화 (TUI 화면 깨짐 방지) 및 커스텀 로거 지정
+    let ui_tx_log = ui_tx.clone();
+    let l_handler = fluidlite::FnLogger::new(move |_lvl, msg| {
+        let _ = ui_tx_log.send(MidiEngineEvent::FluidsynthWarning {
+            message: msg.to_string(),
+        });
+    });
+    fluidlite::Log::set(
+        &[
+            fluidlite::LogLevel::Panic,
+            fluidlite::LogLevel::Error,
+            fluidlite::LogLevel::Warning,
+            fluidlite::LogLevel::Info,
+            fluidlite::LogLevel::Debug,
+        ],
+        l_handler,
+    );
+
     // 공유 상태 객체 초기화
     let player_status = Arc::new(Mutex::new(MimiEngineStatus {
         state: PlayerState::Stopped,
@@ -1077,36 +1095,58 @@ pub fn create_mimi_engine(
 
     // fluidlite 합성기 설정 (Synth A & B)
     let settings_a = Settings::new()
-        .map_err(|e| anyhow::anyhow!("FluidLite Settings A creation failed: {:?}", e))?;
+        .map_err(|e| {
+            let msg = format!("FluidLite Settings A creation failed: {:?}", e);
+            let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
+            anyhow::anyhow!(msg)
+        })?;
 
     if let Some(sr_setting) = settings_a.num("synth.sample-rate") {
         sr_setting.set(sample_rate);
     }
 
     let synth_a = Synth::new(settings_a)
-        .map_err(|e| anyhow::anyhow!("FluidLite Synth A creation failed: {:?}", e))?;
+        .map_err(|e| {
+            let msg = format!("FluidLite Synth A creation failed: {:?}", e);
+            let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
+            anyhow::anyhow!(msg)
+        })?;
 
     on_progress(0.20, "Load Soundfont A...");
-    synth_a.sfload(sf_path, true)
-        .map_err(|e| anyhow::anyhow!("Load Soundfont A Failed: {:?}", e))?;
+    if let Err(e) = synth_a.sfload(sf_path, true) {
+        let msg = format!("Load Soundfont A Failed: {:?}", e);
+        let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
+        return Err(anyhow::anyhow!(msg));
+    }
 
     synth_a.set_gain(1.0);
 
     on_progress(0.50, "Init Synth B...");
 
     let settings_b = Settings::new()
-        .map_err(|e| anyhow::anyhow!("FluidLite Settings B creation failed: {:?}", e))?;
+        .map_err(|e| {
+            let msg = format!("FluidLite Settings B creation failed: {:?}", e);
+            let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
+            anyhow::anyhow!(msg)
+        })?;
 
     if let Some(sr_setting) = settings_b.num("synth.sample-rate") {
         sr_setting.set(sample_rate);
     }
 
     let synth_b = Synth::new(settings_b)
-        .map_err(|e| anyhow::anyhow!("FluidLite Synth B creation failed: {:?}", e))?;
+        .map_err(|e| {
+            let msg = format!("FluidLite Synth B creation failed: {:?}", e);
+            let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
+            anyhow::anyhow!(msg)
+        })?;
 
     on_progress(0.55, "Load Soundfont B...");
-    synth_b.sfload(sf_path, true)
-        .map_err(|e| anyhow::anyhow!("Load Soundfont B Failed: {:?}", e))?;
+    if let Err(e) = synth_b.sfload(sf_path, true) {
+        let msg = format!("Load Soundfont B Failed: {:?}", e);
+        let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
+        return Err(anyhow::anyhow!(msg));
+    }
 
     synth_b.set_gain(1.0);
 

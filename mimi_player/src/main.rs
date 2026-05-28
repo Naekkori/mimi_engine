@@ -60,6 +60,9 @@ struct App {
 
     // 실시간 하이라이트용 마지막 입력 키 (키 문자, 입력 시간)
     last_key: Option<(char, std::time::Instant)>,
+
+    // 알림 센터 (최근 Fluidsynth 경고/에러 메시지 및 수신 시간)
+    notifications: Vec<(String, std::time::Instant)>,
 }
 
 impl App {
@@ -91,12 +94,13 @@ impl App {
             seek_bar_rect: ratatui::layout::Rect::default(),
             browsing_toggle: true,
             last_key: None,
+            notifications: Vec::new(),
         }
     }
 }
 
 fn main() -> color_eyre::Result<()> {
-    //터미널 타이틀 설정
+    // 터미널 타이틀 설정
     let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("Mimi Player 😸".to_string()));
     color_eyre::install()?;
     let mut terminal = ratatui::init();
@@ -177,35 +181,6 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
         if needs_redraw {
             terminal.draw(|f| render(f, &mut app))?;
             needs_redraw = false;
-        }
-
-        // 로딩 중일 때 비동기 결과 확인
-        if let AppState::Loading(ref mut progress, ref mut status) = app.state {
-            needs_redraw = true;
-
-            if let Some(rx) = &app.loading_rx {
-                while let Ok(event) = rx.try_recv() {
-                    match event {
-                        LoadingEvent::Progress(p, msg) => {
-                            *progress = p as f64;
-                            *status = msg;
-                        }
-                        LoadingEvent::Success((handle, stream)) => {
-                            app.engine = Some(handle);
-                            app._stream = Some(stream);
-                            app.state = AppState::Browsing;
-                            app.loading_rx = None;
-                            app.song_name = "Ready.".to_string();
-                            break;
-                        }
-                        LoadingEvent::Error(err) => {
-                            // 로딩 실패 시 터미널을 복구한 뒤 에러를 반환하여 안전하게 강제 종료
-                            ratatui::restore();
-                            return Err(eyre!("Error: {}", err));
-                        }
-                    }
-                }
-            }
         }
 
         if event::poll(std::time::Duration::from_millis(16))? {
@@ -498,6 +473,11 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
             }
         }
 
+        // 알림 메시지가 있는 경우 4초 제한에 따라 사라지게 하기 위해 지속적으로 화면 갱신
+        if !app.notifications.is_empty() {
+            needs_redraw = true;
+        }
+
         // 비동기 이벤트 처리
         if let Some(handle) = &app.engine {
             while let Ok(ui_event) = handle.ui_rx.try_recv() {
@@ -537,8 +517,43 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             needs_redraw = true;
                         }
                     }
+                    mimi_core::MidiEngineEvent::FluidsynthWarning { message } => {
+                        app.notifications.push((message, std::time::Instant::now()));
+                        needs_redraw = true;
+                    }
                     _ => {}
                 }
+            }
+        }
+
+        if let Some(rx) = &app.loading_rx {
+            let mut done = false;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    LoadingEvent::Progress(p, msg) => {
+                        if let AppState::Loading(ref mut progress, ref mut status) = app.state {
+                            *progress = p as f64;
+                            *status = msg;
+                        }
+                        needs_redraw = true;
+                    }
+                    LoadingEvent::Success((handle, stream)) => {
+                        app.engine = Some(handle);
+                        app._stream = Some(stream);
+                        app.state = AppState::Browsing;
+                        app.song_name = "Ready.".to_string();
+                        needs_redraw = true;
+                        done = true;
+                        break;
+                    }
+                    LoadingEvent::Error(err) => {
+                        ratatui::restore();
+                        return Err(eyre!("Error: {}", err));
+                    }
+                }
+            }
+            if done {
+                app.loading_rx = None;
             }
         }
     }
@@ -547,21 +562,50 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
 fn render(frame: &mut Frame, app: &mut App) {
     let version = env!("CARGO_PKG_VERSION");
     
-    // 전체 레이아웃을 메인 영역과 하단 도움말 영역으로 나눔
+    // 전체 레이아웃을 메인 영역, 하단 도움말 영역, 알림 영역(있는 경우)으로 나눔
     use ratatui::layout::{Constraint, Direction, Layout};
-    let global_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    
+    // 알림 메시지 필터 (최근 4초 이내의 알림만 표시)
+    app.notifications.retain(|(_, time)| time.elapsed().as_secs() < 4);
+    
+    let has_notification = !app.notifications.is_empty();
+    let constraints = if has_notification {
+        vec![
+            Constraint::Min(0),
+            Constraint::Length(4), // 알림 센터 영역 (경고 메시지 출력)
+            Constraint::Length(3), // 도움말 영역 고정 크기 할당
+        ]
+    } else {
+        vec![
             Constraint::Min(0),
             Constraint::Length(3), // 도움말 영역 고정 크기 할당
-        ])
+        ]
+    };
+
+    let global_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(frame.area());
 
     let main_area = global_layout[0];
-    let help_area = global_layout[1];
+    let (help_area, notification_area) = if has_notification {
+        (global_layout[2], Some(global_layout[1]))
+    } else {
+        (global_layout[1], None)
+    };
 
     let block = Block::bordered()
         .title_top(Line::from(format!("MIMI PLAYER - {}", version)).centered());
+
+    // 알림이 있는 경우 알림 박스 렌더링
+    if let Some(noti_area) = notification_area {
+        if let Some((msg, _)) = app.notifications.last() {
+            let noti_text = Paragraph::new(format!(" ⚠️ Fluidsynth Alert: {}", msg))
+                .block(Block::bordered().title(" Notification Center ".bold()).border_style(Style::default().fg(Color::Yellow)))
+                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+            frame.render_widget(noti_text, noti_area);
+        }
+    }
 
     match &app.state {
         AppState::Browsing => {
@@ -612,7 +656,7 @@ fn render(frame: &mut Frame, app: &mut App) {
 
             let add_guide = |spans: &mut Vec<Span>, key_str: &str, desc: &str, highlight_key: char| {
                 if is_hl(highlight_key) {
-                    spans.push(Span::styled(key_str.to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+                    spans.push(Span::styled(key_str.to_string(), Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)));
                 } else {
                     spans.push(Span::styled(key_str.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
                 }

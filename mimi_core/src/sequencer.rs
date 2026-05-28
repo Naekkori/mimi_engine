@@ -51,6 +51,10 @@ pub enum MidiEngineEvent {
         mask_lo:u8, //하위 8비트 마스크 (채널 1~8)
         mask_hi:u8, //상위 8비트 마스크 (채널 9~16)
     },
+    // Fluidsynth/Fluidlite 에러 및 경고 메세지 전송 채널
+    FluidsynthWarning {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]
