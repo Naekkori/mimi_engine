@@ -223,6 +223,7 @@ TickUpdate { current_tick, total_tick }            // 재생 진행 위치
 ChannelLevel { port, levels }                      // 채널 레벨미터
 SetDrumChannel { port, channel, is_drum }          // 드럼 채널 설정 변경
 ChordUpdate { root_pitch, is_minor }               // 실시간 코드 상태 (디버그)
+FluidsynthWarning { message }                      // Fluidsynth/Fluidlite 경고 및 에러 메시지
 ```
 
 ### `MimiEngineStatus`
