@@ -881,9 +881,10 @@ fn render(frame: &mut Frame, app: &mut App) {
             add_guide(&mut spans, "r", ": Rhythm Change", 'r');
 
             // ,/. 이나 [/] 와 같은 한 그룹 안에서 둘 중 하나만 매칭되어도 불이 들어오게 보완함
-            if is_hl('.') { spans[6] = Span::styled(",/.", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
-            if is_hl(']') { spans[8] = Span::styled("[/]", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
-            if is_hl('=') { spans[10] = Span::styled("-/=", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
+            // add_guide 1호출 = span 3개(키, 설명, 구분자) -> space:0, s:3, ESC:6, ,/.:9, [/]:12, -/=:15, r:18
+            if is_hl('.') { spans[9] = Span::styled(",/.", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
+            if is_hl(']') { spans[12] = Span::styled("[/]", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
+            if is_hl('=') { spans[15] = Span::styled("-/=", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)); }
 
             let help_text = Paragraph::new(Line::from(spans))
                 .block(Block::bordered().title(" Shortcut Guide ".bold()).border_style(Style::default().fg(Color::Blue)))
