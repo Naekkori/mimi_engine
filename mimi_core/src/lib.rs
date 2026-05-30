@@ -891,6 +891,8 @@ impl AudioPlaybackContext {
                     let _ = self.ui_tx.send(MidiEngineEvent::ChordUpdate {
                         root_pitch: chord.root_pitch,
                         is_minor: chord.is_minor,
+                        is_7th: chord.is_7th,
+                        is_maj7: chord.is_maj7,
                     });
                 }
 

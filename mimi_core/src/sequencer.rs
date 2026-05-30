@@ -44,6 +44,8 @@ pub enum MidiEngineEvent {
     ChordUpdate {
         root_pitch: u8, // C=0, C#=1 ... B=11
         is_minor: bool,
+        is_7th: bool,
+        is_maj7: bool,
     },
     // 리듬엔진 제어
     RhythmEngineControl {
@@ -388,6 +390,8 @@ impl MimiSequencer {
                         tick,
                         root_pitch: root,
                         is_minor,
+                        is_7th: false,  // 베이스 멜로디에서는 7도 유추가 어려우므로 기본값 처리함
+                        is_maj7: false,
                     });
                 }
             }
@@ -405,11 +409,13 @@ impl MimiSequencer {
                 
                 // 공백 기준으로 잘라 가사 사이에 코드 토큰이 있는지 검색
                 for word in cleaned.split_whitespace() {
-                    if let Some((root, is_minor)) = parse_single_chord_name(word) {
+                    if let Some((root, is_minor, is_7th, is_maj7)) = parse_single_chord_name(word) {
                         chord_timeline.push(BsChordEvent {
                             tick,
                             root_pitch: root,
                             is_minor,
+                            is_7th,
+                            is_maj7,
                         });
                         break; // 한 가사 토큰 라인에서는 첫 번째 매치된 코드만 채택
                     }
@@ -518,21 +524,19 @@ impl MimiSequencer {
     
 }
 
-/// 가사 텍스트 에 개별 존재할 수 있는 단일 코드(예: [C], Am, F#m, Bb7)를 분석하여
-/// 정규화된 root_pitch(0~11) 및 minor 여부를 식별해내는 경량 헬퍼
-fn parse_single_chord_name(word: &str) -> Option<(u8, bool)> {
-    if word.is_empty() {
+/// 가사 텍스트에 개별 존재할 수 있는 단일 코드(예: [C], Am, F#m, Bb7)를 분석하여
+/// 정규화된 root_pitch(0~11), minor 여부, 7th 여부, maj7 여부를 식별해내는 경량 헬퍼
+fn parse_single_chord_name(word: &str) -> Option<(u8, bool, bool, bool)> { // (root_pitch, is_minor, is_7th, is_maj7)
+    let trimmed = word.trim();
+    if trimmed.is_empty() {
         return None;
     }
 
-    // 앞뒤 노이즈 및 소문자 전이
-    let cleaned = word.trim().to_uppercase();
-    
-    // 첫 문자(A~G) 획득 및 매핑
-    let mut chars = cleaned.chars();
+    let mut chars = trimmed.chars();
     let first = chars.next()?;
     
-    let root = match first {
+    // 루트 음정 획득 (대소문자 구분 없이 대문자로 변환하여 매칭함)
+    let root = match first.to_ascii_uppercase() {
         'C' => 0,
         'D' => 2,
         'E' => 4,
@@ -546,24 +550,47 @@ fn parse_single_chord_name(word: &str) -> Option<(u8, bool)> {
     // 올림(#)/내림(b) 변화 상태 파악
     let mut current_idx = 1;
     let mut modifier = 0i8;
-    if let Some(second) = cleaned.chars().nth(current_idx) {
+    if let Some(second) = trimmed.chars().nth(current_idx) {
         if second == '#' {
             modifier = 1;
             current_idx += 1;
-        } else if second == 'B' || second == '♭' {
+        } else if second.to_ascii_uppercase() == 'B' || second == '♭' {
             modifier = -1;
             current_idx += 1;
         }
     }
 
     let final_root = ((root as i8 + modifier + 12) % 12) as u8;
+    
+    // 접미사 부분 추출
+    let suffix = &trimmed[current_idx..];
+    
+    let mut is_minor = false;
+    let mut is_7th = false;
+    let mut is_maj7 = false;
+    
+    if !suffix.is_empty() {
+        let suffix_upper = suffix.to_uppercase();
+        
+        // 7화음 속성 감지
+        if suffix_upper.contains('7') {
+            is_7th = true;
+        }
+        
+        // 마이너 속성 정밀 감지 (대소문자 구분을 통해 CM7과 Cm7의 오인식을 해결함)
+        if suffix.starts_with('m') && !suffix.starts_with("maj") {
+            is_minor = true;
+        } else if suffix_upper.starts_with("MIN") {
+            is_minor = true;
+        } else if suffix.starts_with('M') && !suffix_upper.starts_with("MAJ") && !suffix.starts_with("M7") {
+            is_minor = true;
+        }
 
-    // 마이너 속성 감지 (m, min, minor 기재 여부)
-    let is_minor = if let Some(sub) = cleaned.get(current_idx..) {
-        sub.starts_with('M') && !sub.starts_with("MAJ") || sub.starts_with("MIN")
-    } else {
-        false
-    };
+        // 메이저 7화음 속성 감지 (maj7, Maj7, MAJ7, M7 등)
+        if suffix_upper.contains("MAJ7") || suffix.contains("M7") {
+            is_maj7 = true;
+        }
+    }
 
-    Some((final_root, is_minor))
+    Some((final_root, is_minor, is_7th, is_maj7))
 }

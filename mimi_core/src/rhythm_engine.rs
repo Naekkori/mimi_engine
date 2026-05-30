@@ -47,8 +47,10 @@ pub struct AdvancedRhythmPattern {
 #[derive(Clone, Debug)]
 pub struct BsChordEvent {
     pub tick: u32,
-    pub root_pitch: u8, // C=0, C#=1, D=2 ... B=11 (옥타브 무관 정규화된 값)
-    pub is_minor: bool, // 단순화를 위해 Major/Minor 분기 처리 (확장 가능)
+    pub root_pitch: u8,  // C=0, C#=1, D=2 ... B=11 (옥타브 무관 정규화된 값)
+    pub is_minor: bool,  // 단순화를 위해 Major/Minor 분기 처리 (확장 가능)
+    pub is_7th: bool,    // 7화음 여부
+    pub is_maj7: bool,   // 메이저 7화음 여부 (C7 vs CMaj7 구분용)
 }
 
 pub struct RhythmEngine {
@@ -670,8 +672,12 @@ impl RhythmEngine {
                                 }
                                 TrackType::Bass | TrackType::Accompaniment => {
                                     // 패턴 리듬 파일이 C-Major(C=0) 기준으로 제작되었다고 가정
-                                    // 만약 원곡 코드가 Minor인데, 패턴 소스가 장3도(E 성분)를 연주 중이라면 단3도로 보정
+                                    // 만약 원곡 코드가 Minor인데, 패턴 소스가 장3도(E 성분)를 연주 중이라면 단3도로 보정함
                                     if current_chord.is_minor && (note.note_number % 12 == 4) {
+                                        shifted -= 1; // 반음 내림
+                                    }
+                                    // 원곡 코드가 7화음이고 메이저 7th가 아니면(도미넌트7th, 마이너7th) 장7도(B, 11)를 단7도로 보정함
+                                    if current_chord.is_7th && !current_chord.is_maj7 && (note.note_number % 12 == 11) {
                                         shifted -= 1; // 반음 내림
                                     }
                                     final_note_number = shifted.clamp(0, 127) as u8;

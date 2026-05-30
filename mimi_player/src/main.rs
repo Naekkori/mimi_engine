@@ -495,7 +495,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                         }
                         needs_redraw = true;
                     }
-                    mimi_core::MidiEngineEvent::ChordUpdate { root_pitch, is_minor } => {
+                    mimi_core::MidiEngineEvent::ChordUpdate { root_pitch, is_minor, is_7th, is_maj7 } => {
                         let root_str = match root_pitch {
                             0 => "C",
                             1 => "C#",
@@ -512,7 +512,12 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                             _ => "?",
                         };
                         let m_str = if is_minor { "m" } else { "" };
-                        let new_chord = format!("{}{}", root_str, m_str);
+                        let sev_str = if is_7th {
+                            if is_maj7 { "Maj7" } else { "7" }
+                        } else {
+                            ""
+                        };
+                        let new_chord = format!("{}{}{}", root_str, m_str, sev_str);
                         if app.current_chord_name != new_chord {
                             app.current_chord_name = new_chord;
                             needs_redraw = true;
