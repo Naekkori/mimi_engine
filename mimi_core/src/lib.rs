@@ -58,6 +58,10 @@ pub struct MimiEngineStatus {
     pub is_bs_detected: bool,
     // 미디파일 의 현재 템포
     pub current_tempo: i32,
+    // 미디파일에 정의된 원곡 키 시그니처 (샤프/플랫 수, 단조 여부)
+    pub song_key_sig: Option<(i8, bool)>,
+    // 멜로디 피치 분석을 기반으로 추정한 곡의 성별 (true: 여성, false: 남성, None: 분석 불가 등)
+    pub is_female: Option<bool>,
 }
 
 /// 외부 제어용 인터페이스 핸들
@@ -431,6 +435,9 @@ impl AudioPlaybackContext {
                         status.total_tick = self.sequencer.total_ticks as u64;
                         status.current_time = std::time::Duration::from_secs(0);
                         status.is_bs_detected = bs_detected;
+                        // 새 곡 로드 시 이전 곡의 키 시그니처 및 성별 초기화
+                        status.song_key_sig = None;
+                        status.is_female = None;
                     }
                     
                     // 신규 곡의 음량 게인 강제 재조정
@@ -875,6 +882,13 @@ impl AudioPlaybackContext {
                             self.restore_original_states();
                         }
                     }
+                    MidiEngineEvent::KeySignature { key, is_sharp } => {
+                        // 원곡 키 시그니처 및 성별 분석 결과(is_female)를 status에 저장하고 UI에도 전달
+                        let mut status = self.status.lock().unwrap();
+                        status.song_key_sig = Some((key, is_sharp));
+                        status.is_female = self.sequencer.is_female;
+                        let _ = self.ui_tx.send(MidiEngineEvent::KeySignature { key, is_sharp });
+                    }
                     other_event => {
                         let _ = self.ui_tx.send(other_event);
                     }
@@ -1090,6 +1104,8 @@ pub fn create_mimi_engine(
         current_rhythm: Rhythm::Original,
         is_bs_detected: false,
         current_tempo: 500_000,
+        song_key_sig: None,
+        is_female: None,
     }));
     let status_clone = Arc::clone(&player_status);
 

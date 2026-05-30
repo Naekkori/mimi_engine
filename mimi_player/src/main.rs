@@ -81,6 +81,8 @@ impl App {
                 current_rhythm: Rhythm::Original,
                 is_bs_detected: false,
                 current_tempo: 500_000,
+                song_key_sig: None,
+                is_female: None,
             },
             file_list: Vec::new(),
             selected_index: 0,
@@ -454,7 +456,9 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     || app.engine_status.tempo != status.tempo
                     || app.engine_status.key != status.key
                     || app.engine_status.volume != status.volume
-                    || app.engine_status.is_bs_detected != status.is_bs_detected;
+                    || app.engine_status.is_bs_detected != status.is_bs_detected
+                    || app.engine_status.song_key_sig != status.song_key_sig
+                    || app.engine_status.is_female != status.is_female;
                 app.engine_status = status;
                 if changed {
                     needs_redraw = true;
@@ -755,8 +759,18 @@ fn render(frame: &mut Frame, app: &mut App) {
                     )
                 }),
                 Line::from(format!(
-                    "Key: {:+2}  |  Tempo: {:.1}x  |  Volume: {:>3}%  |  Change Rhythm: [r]",
-                    app.engine_status.key, app.engine_status.tempo, app.engine_status.volume
+                    "Key: {:+2}{}  |  Tempo: {:.1}x  |  Volume: {:>3}%  |  Change Rhythm: [r]",
+                    app.engine_status.key,
+                    if let Some((sf, is_minor)) = app.engine_status.song_key_sig {
+                        format!(
+                            " [{}]",
+                            key_name_with_gender(sf, is_minor, app.engine_status.key, app.engine_status.is_female)
+                        )
+                    } else {
+                        String::new()
+                    },
+                    app.engine_status.tempo,
+                    app.engine_status.volume
                 )),
             ];
             frame.render_widget(Paragraph::new(info_text), outer[0]);
@@ -934,4 +948,48 @@ fn centered_rect(
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+// 조옮김 오프셋을 적용한 최종 조성명과 여성키/남성키 판별 문자열 반환
+// sf       : MIDI KeySignature 샤프/플랫 수 (-7 ~ +7)
+// is_minor : 단조 여부 (midly는 단조=true, 장조=false 로 정의함)
+// key_offset: 현재 사용자가 설정한 조옮김 반음 오프셋
+fn key_name_with_gender(sf: i8, is_minor: bool, key_offset: i8, is_female: Option<bool>) -> String {
+    // 장조 근음 테이블: sf = -7 ~ +7, 인덱스 = sf + 7
+    // Cb=11, Gb=6, Db=1, Ab=8, Eb=3, Bb=10, F=5, C=0, G=7, D=2, A=9, E=4, B=11, F#=6, C#=1
+    let major_roots: [u8; 15] = [11, 6, 1, 8, 3, 10, 5, 0, 7, 2, 9, 4, 11, 6, 1];
+    let idx = (sf.clamp(-7, 7) + 7) as usize;
+    let major_root = major_roots[idx];
+
+    // 단조는 장조 근음에서 단3도(3반음) 아래 (C Major -> A Minor)
+    let base_root = if is_minor {
+        ((major_root as i8 - 3 + 12) % 12) as u8
+    } else {
+        major_root
+    };
+
+    // 조옮김 오프셋 적용
+    let final_root = ((base_root as i8 + (key_offset % 12) + 12) % 12) as u8;
+
+    let root_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    let mode = if is_minor { "m" } else { "" };
+    let name = root_names[final_root as usize];
+
+    // 여성키/남성키 판별 (멜로디 피치 분석 기반)
+    let gender = match is_female {
+        Some(true) => {
+            // 본래 여성곡: 키 오프셋이 -4 이하로 내려가면 남성키로 전환
+            if key_offset <= -4 { "Male" } else { "Female" }
+        }
+        Some(false) => {
+            // 본래 남성곡: 키 오프셋이 +4 이상으로 올라가면 여성키로 전환
+            if key_offset >= 4 { "Female" } else { "Male" }
+        }
+        None => {
+            // 분석 정보가 없을 경우 폴백: 절대 조성 기준으로 구분
+            if final_root >= 6 { "Female" } else { "Male" }
+        }
+    };
+
+    format!("{}{} ({})", name, mode, gender)
 }
