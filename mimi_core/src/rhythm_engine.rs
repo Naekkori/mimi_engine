@@ -10,6 +10,7 @@ pub enum Rhythm {
     Techno,
     Hiphop,
     Jitterbug,
+    Edm,
     Original, // 원곡 (꺼짐)
 }
 
@@ -507,6 +508,107 @@ impl RhythmEngine {
         self.pattern_library.insert(Rhythm::Jitterbug, AdvancedRhythmPattern {
             length_ticks: 1920,
             tracks: jitterbug_tracks,
+        });
+
+        // 7. EDM 패턴 (강렬한 일렉트로닉 댄스 및 빅룸/하우스 그루브)
+        let mut edm_tracks = Vec::new();
+        let mut edm_drum_notes = Vec::new();
+
+        // 4-on-the-floor 강렬한 킥 드럼 (Key 36) + 그루브용 엇박 고스트 킥
+        for &tick in &[0, 480, 960, 1440] {
+            edm_drum_notes.push(MidiNote { tick, note_number: 36, velocity: 125, channel: 9 });
+            edm_drum_notes.push(MidiNote { tick: tick + 100, note_number: 36, velocity: 0, channel: 9 });
+        }
+        // 마디 끝 엇박 더블 킥 (1800)
+        edm_drum_notes.push(MidiNote { tick: 1800, note_number: 36, velocity: 100, channel: 9 });
+        edm_drum_notes.push(MidiNote { tick: 1900, note_number: 36, velocity: 0, channel: 9 });
+
+        // 백비트 스네어/클랩 레이어 (Key 39: Hand Clap)
+        for &tick in &[480, 1440] {
+            edm_drum_notes.push(MidiNote { tick, note_number: 39, velocity: 115, channel: 9 });
+            edm_drum_notes.push(MidiNote { tick: tick + 100, note_number: 39, velocity: 0, channel: 9 });
+        }
+
+        // 질주감 형성을 위한 엇박 오픈하이햇 (Key 46)
+        for &tick in &[240, 720, 1200, 1680] {
+            edm_drum_notes.push(MidiNote { tick, note_number: 46, velocity: 100, channel: 9 });
+            edm_drum_notes.push(MidiNote { tick: tick + 120, note_number: 46, velocity: 0, channel: 9 });
+        }
+
+        // 그루브 보강을 위한 16비트 오프비트 클로즈하이햇 (Key 42)
+        for &tick in &[120, 360, 600, 840, 1080, 1320, 1560, 1800] {
+            edm_drum_notes.push(MidiNote { tick, note_number: 42, velocity: 85, channel: 9 });
+            edm_drum_notes.push(MidiNote { tick: tick + 80, note_number: 42, velocity: 0, channel: 9 });
+        }
+
+        edm_tracks.push(RhythmTrack {
+            track_type: TrackType::Drum,
+            instrument_program: 25, // TR-808 Analog Kit로 설정
+            notes: edm_drum_notes,
+        });
+
+        // 사이드체인을 모방한 오프비트 베이스 라인 (Synth Bass 2 - GM 39)
+        let mut edm_bass_notes = Vec::new();
+        // 엇박 리드미컬 베이스 (킥 비트를 피해 튕겨줌)
+        let edm_bass_ticks = [
+            (120, 240),
+            (240, 360),
+            (720, 840),
+            (840, 960),
+            (1200, 1320),
+            (1320, 1440),
+            (1680, 1800),
+        ];
+        for &(start_tick, end_tick) in &edm_bass_ticks {
+            edm_bass_notes.push(MidiNote {
+                tick: start_tick,
+                note_number: 36, // 근음 기준으로 실시간 이조됨
+                velocity: 110,
+                channel: 1,
+            });
+            edm_bass_notes.push(MidiNote {
+                tick: end_tick,
+                note_number: 36,
+                velocity: 0,
+                channel: 1,
+            });
+        }
+        edm_tracks.push(RhythmTrack {
+            track_type: TrackType::Bass,
+            instrument_program: 39, // Synth Bass 2
+            notes: edm_bass_notes,
+        });
+
+        // 플럭 스타일 Super Saw 코드 백킹 (Sawtooth Lead - GM 81)
+        let mut edm_synth_notes = Vec::new();
+        // 8비트 그리드로 시원하게 타건하는 신스 화음
+        let edm_synth_ticks = [0, 240, 480, 720, 960, 1200, 1440, 1680];
+        for &tick in &edm_synth_ticks {
+            // C4(60), E4(64), G4(67), C5(72) - 4성부 구성
+            for &note in &[60, 64, 67, 72] {
+                edm_synth_notes.push(MidiNote {
+                    tick,
+                    note_number: note,
+                    velocity: 80,
+                    channel: 2,
+                });
+                edm_synth_notes.push(MidiNote {
+                    tick: tick + 120,
+                    note_number: note,
+                    velocity: 0,
+                    channel: 2,
+                });
+            }
+        }
+        edm_tracks.push(RhythmTrack {
+            track_type: TrackType::Accompaniment,
+            instrument_program: 81, // Sawtooth Lead
+            notes: edm_synth_notes,
+        });
+
+        self.pattern_library.insert(Rhythm::Edm, AdvancedRhythmPattern {
+            length_ticks: 1920,
+            tracks: edm_tracks,
         });
     }
 

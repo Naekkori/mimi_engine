@@ -31,7 +31,7 @@ pub enum MimiCommand {
     SetVolume(u8),  // 마스터 볼륨 (VOLUME_MIN ~ VOLUME_MAX)
     Seek(u32),      // 특정 절대 틱(Tick) 위치로 점프
     LoadSong(Vec<u8>), // 새로운 MIDI 바이너리를 시퀀서에 주입 후 리셋 대기
-    SetRhythm(Rhythm), // 실시간 리듬 모드 변경 (Original, Disco, GoGo, Techno, Dance)
+    SetRhythm(Rhythm), // 실시간 리듬 모드 변경 (Original, Disco, GoGo, Techno, Dance, Hiphop, Jitterbug, Edm)
 }
 
 /// 오디오 엔진의 현재 내부 상태

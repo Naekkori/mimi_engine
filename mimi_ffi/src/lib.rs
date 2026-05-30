@@ -36,7 +36,7 @@ pub struct MimiFfiStatus {
     pub current_tempo: c_int,
     // $BS 베이스 트랙 검출 여부 (0/1)
     pub is_bs_detected: c_int,
-    // 현재 리듬 모드 (0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug)
+    // 현재 리듬 모드 (0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug, 7=Edm)
     pub current_rhythm: c_int,
 }
 
@@ -164,7 +164,7 @@ pub extern "C" fn mimi_ffi_seek(handle: *mut MimiFfiHandle, tick: c_uint) {
 }
 
 /// 리듬 모드 설정
-/// rhythm: 0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug
+/// rhythm: 0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug, 7=Edm
 #[unsafe(no_mangle)]
 pub extern "C" fn mimi_ffi_set_rhythm(handle: *mut MimiFfiHandle, rhythm: c_int) {
     if let Some(h) = unsafe { handle.as_mut() } {
@@ -175,6 +175,7 @@ pub extern "C" fn mimi_ffi_set_rhythm(handle: *mut MimiFfiHandle, rhythm: c_int)
             4 => Rhythm::Techno,
             5 => Rhythm::Hiphop,
             6 => Rhythm::Jitterbug,
+            7 => Rhythm::Edm,
             _ => Rhythm::Original,
         };
         let _ = h.handle.send_command(MimiCommand::SetRhythm(r));
@@ -209,6 +210,7 @@ pub extern "C" fn mimi_ffi_get_status(
                 Rhythm::Techno    => 4,
                 Rhythm::Hiphop    => 5,
                 Rhythm::Jitterbug => 6,
+                Rhythm::Edm       => 7,
             };
             unsafe {
                 (*out).state           = state_int;

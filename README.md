@@ -21,7 +21,7 @@ The audio backend (cpal) is completely decoupled from the core module, allowing 
 - **Real-Time Control** - Interactive control of key transpose, tempo ratio adjustment, and tick-based seeking during playback.
 - **Automated MIDI Standards Detection** - Auto GM / GS / XG format recognition and bank mapping via SysEx analysis.
 - **Note Stuck Prevention** - Automatic release of active notes on key change, pause, and stop commands.
-- **Real-Time Rhythm Transformation** - Real-time generation of Disco, GoGo, Dance, Techno, Hiphop, and Jitterbug rhythm patterns based on chord analysis of the $BS (Bass) track.
+- **Real-Time Rhythm Transformation** - Real-time generation of Disco, GoGo, Dance, Techno, Hiphop, Jitterbug, and Edm rhythm patterns based on chord analysis of the $BS (Bass) track.
 - **Game Engine Integration** - Simple integration via C ABI FFI as Unreal / Unity / Godot plugins.
 
 ### Project Structure
@@ -161,6 +161,7 @@ mimi_ffi_destroy(handle);
 | 4 | Techno |
 | 5 | Hiphop |
 | 6 | Jitterbug |
+| 7 | Edm |
 
 #### `MimiFfiStatus` Structure
 
@@ -209,7 +210,7 @@ MIMI는 저지연 오디오 합성과 정밀한 실시간 타이밍 제어를 �
 - **실시간 제어** - 재생 중 키 조옮김(Transpose), 템포 비율 조정, 틱 위치 점프(Seek)
 - **MIDI 규격 자동 감지** - SysEx 분석을 통한 GM / GS / XG 포맷 자동 판별 및 뱅크 매핑
 - **음 걸림 방지** - 키 변경, 일시정지, 정지 시 활성 노트 자동 해제
-- **실시간 리듬 변환** - $BS(베이스) 트랙 코드 분석 기반으로 Disco, GoGo, Dance, Techno, Hiphop, Jitterbug 리듬 패턴 실시간 생성
+- **실시간 리듬 변환** - $BS(베이스) 트랙 코드 분석 기반으로 Disco, GoGo, Dance, Techno, Hiphop, Jitterbug, Edm 리듬 패턴 실시간 생성
 - **게임 엔진 연동** - C ABI FFI를 통해 Unreal / Unity / Godot 플러그인으로 통합 가능
 
 ### 프로젝트 구조
@@ -349,6 +350,7 @@ mimi_ffi_destroy(handle);
 | 4 | Techno |
 | 5 | Hiphop |
 | 6 | Jitterbug |
+| 7 | Edm (EDM) |
 
 #### `MimiFfiStatus` 구조체
 
@@ -402,6 +404,7 @@ Dance       // 댄스
 Techno      // 테크노
 Hiphop      // 힙합
 Jitterbug   // 지르박
+Edm         // EDM
 ```
 
 ### `MidiEngineEvent`
