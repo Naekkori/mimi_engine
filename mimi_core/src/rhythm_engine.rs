@@ -641,62 +641,246 @@ impl RhythmEngine {
 
             // 2. 원곡 길이만큼 리듬 루프 생성 진입
             while current_offset < total_duration_ticks {
-                
+                let is_last_measure = current_offset + scaled_length_ticks >= total_duration_ticks;
+
                 // 3. 루프 내의 각 악기 트랙별로 처리
                 for (track_idx, track) in pattern.tracks.iter().enumerate() {
-                    for note in &track.notes {
-                        let scaled_note_tick = (note.tick as f64 * ppq_ratio).round() as u32;
-                        let target_tick = current_offset + scaled_note_tick;
-
-                        if target_tick >= total_duration_ticks {
-                            break;
-                        }
-
-                        // 4. 이 노트가 위치할 타임라인에서 가장 최신의 $BS 코드 구하기
-                        let current_chord = match self.get_chord_at_tick(target_tick, bs_timeline) {
-                            Some(chord) => chord,
-                            None => &bs_timeline[0], // 못 찾으면 첫 번째 코드 적용
-                        };
-
-                        // 5. 악기 성격에 따른 트랜스포즈 알고리즘 수행
-                        let final_note_number;
-
-                        if note.velocity > 0 {
-                            // Note-On: 현재 코드에 맞춰 이조 수행
-                            let mut shifted = note.note_number as i16 + current_chord.root_pitch as i16;
-
-                            match track.track_type {
-                                TrackType::Drum => {
-                                    // 드럼 채널은 음정 변환 없이 통과
-                                    final_note_number = note.note_number;
+                    if is_last_measure {
+                        // 곡이 끝나는 마지막 마디: 필인(스네어 롤) 및 엔딩 섹션(드럼 크래시 및 악기 엔딩 화음) 적용
+                        match track.track_type {
+                            TrackType::Drum => {
+                                // 1. 원래 드럼 패턴 중 960틱 이전(전반부)의 노트만 필터링하여 재생
+                                for note in &track.notes {
+                                    if note.tick < 960 {
+                                        let scaled_note_tick = (note.tick as f64 * ppq_ratio).round() as u32;
+                                        let target_tick = current_offset + scaled_note_tick;
+                                        if target_tick < total_duration_ticks {
+                                            generated_notes.push(MidiNote {
+                                                tick: target_tick,
+                                                note_number: note.note_number,
+                                                velocity: note.velocity,
+                                                channel: note.channel,
+                                            });
+                                        }
+                                    }
                                 }
-                                TrackType::Bass | TrackType::Accompaniment => {
-                                    // 패턴 리듬 파일이 C-Major(C=0) 기준으로 제작되었다고 가정
-                                    // 만약 원곡 코드가 Minor인데, 패턴 소스가 장3도(E 성분)를 연주 중이라면 단3도로 보정함
-                                    if current_chord.is_minor && (note.note_number % 12 == 4) {
-                                        shifted -= 1; // 반음 내림
+
+                                // 2. 후반부 3박/4박 구간(960틱부터 1680틱 미만) 스네어 롤 필인 적용 (점진적 빌드업)
+                                let fill_in_ticks = [960, 1080, 1200, 1320, 1440, 1500, 1560, 1620];
+                                for (i, &f_tick) in fill_in_ticks.iter().enumerate() {
+                                    let scaled_f_tick = (f_tick as f64 * ppq_ratio).round() as u32;
+                                    let target_tick = current_offset + scaled_f_tick;
+                                    if target_tick < total_duration_ticks {
+                                        let vel = 70 + (i * 5) as u8; // 점진적 강화 (70 -> 105)
+                                        generated_notes.push(MidiNote {
+                                            tick: target_tick,
+                                            note_number: 38, // GM Standard Snare
+                                            velocity: vel,
+                                            channel: 9,
+                                        });
+                                        generated_notes.push(MidiNote {
+                                            tick: target_tick + 80,
+                                            note_number: 38,
+                                            velocity: 0,
+                                            channel: 9,
+                                        });
                                     }
-                                    // 원곡 코드가 7화음이고 메이저 7th가 아니면(도미넌트7th, 마이너7th) 장7도(B, 11)를 단7도로 보정함
-                                    if current_chord.is_7th && !current_chord.is_maj7 && (note.note_number % 12 == 11) {
-                                        shifted -= 1; // 반음 내림
-                                    }
-                                    final_note_number = shifted.clamp(0, 127) as u8;
+                                }
+
+                                // 3. 최종 엔딩 쾅 (1680틱) - 강한 킥(36) + 크래시 심벌(49) 동시 타격
+                                let ending_tick = (1680.0 * ppq_ratio).round() as u32;
+                                let target_tick = current_offset + ending_tick;
+                                if target_tick < total_duration_ticks {
+                                    // 킥 타격
+                                    generated_notes.push(MidiNote {
+                                        tick: target_tick,
+                                        note_number: 36,
+                                        velocity: 127,
+                                        channel: 9,
+                                    });
+                                    generated_notes.push(MidiNote {
+                                        tick: target_tick + 200,
+                                        note_number: 36,
+                                        velocity: 0,
+                                        channel: 9,
+                                    });
+                                    // 크래시 심벌 타격
+                                    generated_notes.push(MidiNote {
+                                        tick: target_tick,
+                                        note_number: 49,
+                                        velocity: 127,
+                                        channel: 9,
+                                    });
+                                    generated_notes.push(MidiNote {
+                                        tick: target_tick + 200,
+                                        note_number: 49,
+                                        velocity: 0,
+                                        channel: 9,
+                                    });
                                 }
                             }
-                            // 이조된 값을 기록해 둠
-                            last_transpositions.insert((track_idx, note.note_number), final_note_number);
-                        } else {
-                            // Note-Off: 이전에 해당 음표에 적용했던 이조 값을 그대로 사용
-                            // 기록이 없으면(이론상 불가능하지만 방어적 코드) 기본값 사용
-                            final_note_number = *last_transpositions.get(&(track_idx, note.note_number)).unwrap_or(&note.note_number);
-                        }
+                            TrackType::Bass => {
+                                // 베이스 엔딩: 마지막 마디 시작부(0틱) 근음 길게 타건 후, 필인 진입 전(960틱) 깔끔하게 뮤트
+                                // 그리고 드럼 엔딩 쾅(1680틱) 타이밍에 강하게 근음 한 번 더 짚어주고 종료
+                                let current_chord = match self.get_chord_at_tick(current_offset, bs_timeline) {
+                                    Some(chord) => chord,
+                                    None => &bs_timeline[0],
+                                };
 
-                        generated_notes.push(MidiNote {
-                            tick: target_tick,
-                            note_number: final_note_number,
-                            velocity: note.velocity,
-                            channel: note.channel,
-                        });
+                                for note in &track.notes {
+                                    if note.tick == 0 && note.velocity > 0 {
+                                        let shifted = (note.note_number as i16 + current_chord.root_pitch as i16).clamp(0, 127) as u8;
+                                        
+                                        // 0틱 타건 시작
+                                        generated_notes.push(MidiNote {
+                                            tick: current_offset,
+                                            note_number: shifted,
+                                            velocity: 110,
+                                            channel: note.channel,
+                                        });
+                                        // 960틱 뮤트
+                                        let mute_tick = (960.0 * ppq_ratio).round() as u32;
+                                        generated_notes.push(MidiNote {
+                                            tick: current_offset + mute_tick,
+                                            note_number: shifted,
+                                            velocity: 0,
+                                            channel: note.channel,
+                                        });
+
+                                        // 1680틱 최종 강타 엔딩
+                                        let ending_tick = (1680.0 * ppq_ratio).round() as u32;
+                                        let target_ending = current_offset + ending_tick;
+                                        if target_ending < total_duration_ticks {
+                                            generated_notes.push(MidiNote {
+                                                tick: target_ending,
+                                                note_number: shifted,
+                                                velocity: 120,
+                                                channel: note.channel,
+                                            });
+                                            generated_notes.push(MidiNote {
+                                                tick: target_ending + 200,
+                                                note_number: shifted,
+                                                velocity: 0,
+                                                channel: note.channel,
+                                            });
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            TrackType::Accompaniment => {
+                                // 반주 엔딩: 0틱에 코드 화음 타건해 960틱까지 유지하고 뮤트
+                                // 1680틱 드럼 엔딩 쾅 타이밍에 강하게 코드 화음 한 번 동시 타건하고 완전 종료
+                                let current_chord = match self.get_chord_at_tick(current_offset, bs_timeline) {
+                                    Some(chord) => chord,
+                                    None => &bs_timeline[0],
+                                };
+
+                                for note in &track.notes {
+                                    if note.tick == 0 && note.velocity > 0 {
+                                        let mut shifted = note.note_number as i16 + current_chord.root_pitch as i16;
+                                        if current_chord.is_minor && (note.note_number % 12 == 4) {
+                                            shifted -= 1;
+                                        }
+                                        // 7화음 보정 논리 추가 반영
+                                        if current_chord.is_7th && !current_chord.is_maj7 && (note.note_number % 12 == 11) {
+                                            shifted -= 1;
+                                        }
+                                        let final_note = shifted.clamp(0, 127) as u8;
+
+                                        // 0틱 시작
+                                        generated_notes.push(MidiNote {
+                                            tick: current_offset,
+                                            note_number: final_note,
+                                            velocity: 95,
+                                            channel: note.channel,
+                                        });
+                                        // 960틱 뮤트
+                                        let mute_tick = (960.0 * ppq_ratio).round() as u32;
+                                        generated_notes.push(MidiNote {
+                                            tick: current_offset + mute_tick,
+                                            note_number: final_note,
+                                            velocity: 0,
+                                            channel: note.channel,
+                                        });
+
+                                        // 1680틱 최종 엔딩 쾅
+                                        let ending_tick = (1680.0 * ppq_ratio).round() as u32;
+                                        let target_ending = current_offset + ending_tick;
+                                        if target_ending < total_duration_ticks {
+                                            generated_notes.push(MidiNote {
+                                                tick: target_ending,
+                                                note_number: final_note,
+                                                velocity: 115,
+                                                channel: note.channel,
+                                            });
+                                            generated_notes.push(MidiNote {
+                                                tick: target_ending + 200,
+                                                note_number: final_note,
+                                                velocity: 0,
+                                                channel: note.channel,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // 기존 리듬 패턴 연주 (일반 마디)
+                        for note in &track.notes {
+                            let scaled_note_tick = (note.tick as f64 * ppq_ratio).round() as u32;
+                            let target_tick = current_offset + scaled_note_tick;
+
+                            if target_tick >= total_duration_ticks {
+                                break;
+                            }
+
+                            // 4. 이 노트가 위치할 타임라인에서 가장 최신의 $BS 코드 구하기
+                            let current_chord = match self.get_chord_at_tick(target_tick, bs_timeline) {
+                                Some(chord) => chord,
+                                None => &bs_timeline[0], // 못 찾으면 첫 번째 코드 적용
+                            };
+
+                            // 5. 악기 성격에 따른 트랜스포즈 알고리즘 수행
+                            let final_note_number;
+
+                            if note.velocity > 0 {
+                                // Note-On: 현재 코드에 맞춰 이조 수행
+                                let mut shifted = note.note_number as i16 + current_chord.root_pitch as i16;
+
+                                match track.track_type {
+                                    TrackType::Drum => {
+                                        // 드럼 채널은 음정 변환 없이 통과
+                                        final_note_number = note.note_number;
+                                    }
+                                    TrackType::Bass | TrackType::Accompaniment => {
+                                        // 패턴 리듬 파일이 C-Major(C=0) 기준으로 제작되었다고 가정
+                                        // 만약 원곡 코드가 Minor인데, 패턴 소스가 장3도(E 성분)를 연주 중이라면 단3도로 보정함
+                                        if current_chord.is_minor && (note.note_number % 12 == 4) {
+                                            shifted -= 1; // 반음 내림
+                                        }
+                                        // 원곡 코드가 7화음이고 메이저 7th가 아니면(도미넌트7th, 마이너7th) 장7도(B, 11)를 단7도로 보정함
+                                        if current_chord.is_7th && !current_chord.is_maj7 && (note.note_number % 12 == 11) {
+                                            shifted -= 1; // 반음 내림
+                                        }
+                                        final_note_number = shifted.clamp(0, 127) as u8;
+                                    }
+                                }
+                                // 이조된 값을 기록해 둠
+                                last_transpositions.insert((track_idx, note.note_number), final_note_number);
+                            } else {
+                                // Note-Off: 이전에 해당 음표에 적용했던 이조 값을 그대로 사용
+                                // 기록이 없으면(이론상 불가능하지만 방어적 코드) 기본값 사용
+                                final_note_number = *last_transpositions.get(&(track_idx, note.note_number)).unwrap_or(&note.note_number);
+                            }
+
+                            generated_notes.push(MidiNote {
+                                tick: target_tick,
+                                note_number: final_note_number,
+                                velocity: note.velocity,
+                                channel: note.channel,
+                            });
+                        }
                     }
                 }
                 // 다음 마디 오프셋 이동
