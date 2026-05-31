@@ -153,7 +153,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
     // [부팅 단계 초기화] 앱 시작과 동시에 엔진 기동
     let (tx, rx) = mpsc::channel();
     app.loading_rx = Some(rx);
-    app.state = AppState::Loading(0.0, "엔진 초기화 시작...".to_string());
+    app.state = AppState::Loading(0.0, "Engine initialization...".to_string());
     let sf_path_str = sf_path.to_string();
     let tx_clone = tx.clone();
 

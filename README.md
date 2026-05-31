@@ -4,7 +4,7 @@
 
 [English](#english) | [한국어](#한국어)
 
----
+***
 
 ## English
 
@@ -59,32 +59,32 @@ mimi_ffi
 
 ### Dependencies
 
-#### mimi_core
+#### mimi\_core
 
-| Crate | Purpose |
-|---|---|
-| `fluidlite` | SoundFont2-based software synthesizer |
-| `midly` | MIDI (SMF) file parser |
-| `crossbeam-channel` | Lock-free command and event queues |
-| `anyhow` | Error handling |
+| Crate               | Purpose                               |
+| ------------------- | ------------------------------------- |
+| `fluidlite`         | SoundFont2-based software synthesizer |
+| `midly`             | MIDI (SMF) file parser                |
+| `crossbeam-channel` | Lock-free command and event queues    |
+| `anyhow`            | Error handling                        |
 
-#### mimi_cpal
+#### mimi\_cpal
 
-| Crate | Purpose |
-|---|---|
+| Crate  | Purpose                          |
+| ------ | -------------------------------- |
 | `cpal` | Cross-platform audio I/O library |
 
-#### mimi_player
+#### mimi\_player
 
-| Crate | Purpose |
-|---|---|
-| `ratatui` | Terminal user interface framework |
-| `crossterm` | Terminal raw mode and input handling |
-| `color-eyre` | Rich panic and error reporting |
+| Crate        | Purpose                              |
+| ------------ | ------------------------------------ |
+| `ratatui`    | Terminal user interface framework    |
+| `crossterm`  | Terminal raw mode and input handling |
+| `color-eyre` | Rich panic and error reporting       |
 
 ### Core APIs
 
-#### mimi_core
+#### mimi\_core
 
 ##### `create_mimi_engine(sf_path, sample_rate, on_progress) -> (MimiEngineHandle, AudioPlaybackContext)`
 
@@ -96,20 +96,20 @@ Invoked inside a game engine or audio backend callback. Populates a stereo inter
 
 ##### `MimiEngineHandle`
 
-| Method / Field | Description |
-|---|---|
-| `send_command(MimiCommand)` | Sends Play, Pause, Stop, SetKey, SetTempo, SetVolume, Seek, LoadSong commands. |
-| `get_status()` | Retrieves status, current tick, elapsed time, tempo scale, transpose offset, and master volume. |
-| `get_state()` | Returns the current PlayerState. |
-| `ui_rx` | Channel receiver for UI events (Lyrics, channel volume levels, tick ticks). |
+| Method / Field              | Description                                                                                     |
+| --------------------------- | ----------------------------------------------------------------------------------------------- |
+| `send_command(MimiCommand)` | Sends Play, Pause, Stop, SetKey, SetTempo, SetVolume, Seek, LoadSong commands.                  |
+| `get_status()`              | Retrieves status, current tick, elapsed time, tempo scale, transpose offset, and master volume. |
+| `get_state()`               | Returns the current PlayerState.                                                                |
+| `ui_rx`                     | Channel receiver for UI events (Lyrics, channel volume levels, tick ticks).                     |
 
-#### mimi_cpal
+#### mimi\_cpal
 
 ##### `spawn_mimi_engine(sf_path, on_progress) -> (MimiEngineHandle, cpal::Stream)`
 
 Used for PC standalone applications. Spawns standard OS output device stream and automatically binds the `fill_buffer` pipeline. The returned `cpal::Stream` must be kept in scope to keep audio running.
 
-### mimi_ffi (Game Engine Integration)
+### mimi\_ffi (Game Engine Integration)
 
 `mimi_ffi` is built as `cdylib` / `staticlib` to generate C-compatible libraries (`.dll` / `.so` / `.dylib`).
 
@@ -134,35 +134,35 @@ mimi_ffi_destroy(handle);
 
 #### FFI Function Reference
 
-| Function | Description |
-|---|---|
-| `mimi_ffi_create(sf_path, sample_rate)` | Spawns a handle. Returns null on failure. |
-| `mimi_ffi_destroy(handle)` | Deallocates engine objects (Must be called to prevent memory leaks). |
-| `mimi_ffi_fill_buffer(handle, buffer, frame_count)` | Populates output audio buffer. |
-| `mimi_ffi_load_song(handle, midi_data, data_len)` | Loads MIDI binary into the sequencer. |
-| `mimi_ffi_play(handle)` | Resumes playback. |
-| `mimi_ffi_pause(handle)` | Pauses playback. |
-| `mimi_ffi_stop(handle)` | Stops playback and resets state. |
-| `mimi_ffi_set_key(handle, key)` | Shifts pitch (-15 to +15). |
-| `mimi_ffi_set_tempo(handle, tempo)` | Multiplies tempo speed (0.2 to 5.0). |
-| `mimi_ffi_set_volume(handle, volume)` | Adjusts master volume level (0 to 100). |
-| `mimi_ffi_seek(handle, tick)` | Seeks to a specific tick position. |
-| `mimi_ffi_set_rhythm(handle, rhythm)` | Switches rhythm styles (See table below). |
-| `mimi_ffi_get_status(handle, out)` | Queries engine status metrics. 1 on success, 0 on failure. |
+| Function                                            | Description                                                          |
+| --------------------------------------------------- | -------------------------------------------------------------------- |
+| `mimi_ffi_create(sf_path, sample_rate)`             | Spawns a handle. Returns null on failure.                            |
+| `mimi_ffi_destroy(handle)`                          | Deallocates engine objects (Must be called to prevent memory leaks). |
+| `mimi_ffi_fill_buffer(handle, buffer, frame_count)` | Populates output audio buffer.                                       |
+| `mimi_ffi_load_song(handle, midi_data, data_len)`   | Loads MIDI binary into the sequencer.                                |
+| `mimi_ffi_play(handle)`                             | Resumes playback.                                                    |
+| `mimi_ffi_pause(handle)`                            | Pauses playback.                                                     |
+| `mimi_ffi_stop(handle)`                             | Stops playback and resets state.                                     |
+| `mimi_ffi_set_key(handle, key)`                     | Shifts pitch (-15 to +15).                                           |
+| `mimi_ffi_set_tempo(handle, tempo)`                 | Multiplies tempo speed (0.2 to 5.0).                                 |
+| `mimi_ffi_set_volume(handle, volume)`               | Adjusts master volume level (0 to 100).                              |
+| `mimi_ffi_seek(handle, tick)`                       | Seeks to a specific tick position.                                   |
+| `mimi_ffi_set_rhythm(handle, rhythm)`               | Switches rhythm styles (See table below).                            |
+| `mimi_ffi_get_status(handle, out)`                  | Queries engine status metrics. 1 on success, 0 on failure.           |
 
 #### Rhythm Codes
 
-| Code | Style |
-|---|---|
-| 0 | Original (No transformation) |
-| 1 | Disco |
-| 2 | GoGo |
-| 3 | Dance |
-| 4 | Techno |
-| 5 | Hiphop |
-| 6 | Jitterbug |
-| 7 | Edm |
-| 8 | Edm2 |
+| Code | Style                        |
+| ---- | ---------------------------- |
+| 0    | Original (No transformation) |
+| 1    | Disco                        |
+| 2    | GoGo                         |
+| 3    | Dance                        |
+| 4    | Techno                       |
+| 5    | Hiphop                       |
+| 6    | Jitterbug                    |
+| 7    | Edm                          |
+| 8    | Edm2                         |
 
 #### `MimiFfiStatus` Structure
 
@@ -194,7 +194,7 @@ cargo run -p mimi_player --release
 cargo build --release -p mimi_ffi
 ```
 
----
+***
 
 ## 한국어
 
@@ -249,32 +249,32 @@ mimi_ffi
 
 ### 의존성
 
-#### mimi_core
+#### mimi\_core
 
-| 크레이트 | 용도 |
-|---------|------|
-| `fluidlite` | SoundFont2 기반 소프트웨어 신디사이저 |
-| `midly` | MIDI(SMF) 파일 파싱 |
+| 크레이트                | 용도                        |
+| ------------------- | ------------------------- |
+| `fluidlite`         | SoundFont2 기반 소프트웨어 신디사이저 |
+| `midly`             | MIDI(SMF) 파일 파싱           |
 | `crossbeam-channel` | 스레드 간 lock-free 명령/이벤트 채널 |
-| `anyhow` | 오류 처리 |
+| `anyhow`            | 오류 처리                     |
 
-#### mimi_cpal
+#### mimi\_cpal
 
-| 크레이트 | 용도 |
-|---------|------|
+| 크레이트   | 용도             |
+| ------ | -------------- |
 | `cpal` | 크로스 플랫폼 오디오 출력 |
 
-#### mimi_player
+#### mimi\_player
 
-| 크레이트 | 용도 |
-|---------|------|
-| `ratatui` | 터미널 UI 프레임워크 |
-| `crossterm` | 터미널 입력 처리 |
-| `color-eyre` | 오류 리포팅 |
+| 크레이트         | 용도           |
+| ------------ | ------------ |
+| `ratatui`    | 터미널 UI 프레임워크 |
+| `crossterm`  | 터미널 입력 처리    |
+| `color-eyre` | 오류 리포팅       |
 
 ### 핵심 API
 
-#### mimi_core
+#### mimi\_core
 
 ##### `create_mimi_engine(sf_path, sample_rate, on_progress) -> (MimiEngineHandle, AudioPlaybackContext)`
 
@@ -286,20 +286,20 @@ mimi_ffi
 
 ##### `MimiEngineHandle`
 
-| 메서드 / 필드 | 설명 |
-|-------|------|
+| 메서드 / 필드                    | 설명                                                                   |
+| --------------------------- | -------------------------------------------------------------------- |
 | `send_command(MimiCommand)` | Play, Pause, Stop, SetKey, SetTempo, SetVolume, Seek, LoadSong 명령 전송 |
-| `get_status()` | 현재 상태, 틱 위치, 경과 시간, 템포 배율, 키 오프셋, 볼륨 상태 조회 |
-| `get_state()` | 현재 PlayerState 반환 |
-| `ui_rx` | 가사, 채널 레벨, 틱 업데이트 등 UI 이벤트 수신 채널 |
+| `get_status()`              | 현재 상태, 틱 위치, 경과 시간, 템포 배율, 키 오프셋, 볼륨 상태 조회                           |
+| `get_state()`               | 현재 PlayerState 반환                                                    |
+| `ui_rx`                     | 가사, 채널 레벨, 틱 업데이트 등 UI 이벤트 수신 채널                                     |
 
-#### mimi_cpal
+#### mimi\_cpal
 
 ##### `spawn_mimi_engine(sf_path, on_progress) -> (MimiEngineHandle, cpal::Stream)`
 
 PC 독립 실행 환경에서 사용한다. cpal 기본 출력 장치를 열고 `fill_buffer`를 자동으로 연결한다. 반환된 `cpal::Stream`은 드롭되면 오디오가 끊기므로 상위 스코프에서 보관해야 한다.
 
-### mimi_ffi (게임 엔진 연동)
+### mimi\_ffi (게임 엔진 연동)
 
 `mimi_ffi`는 `cdylib` / `staticlib`으로 빌드되어 C 호환 `.dll` / `.so` / `.dylib`를 생성한다.
 
@@ -324,35 +324,35 @@ mimi_ffi_destroy(handle);
 
 #### C ABI 함수 목록
 
-| 함수 | 설명 |
-|------|------|
-| `mimi_ffi_create(sf_path, sample_rate)` | 핸들 생성. 실패 시 null 반환 |
-| `mimi_ffi_destroy(handle)` | 핸들 해제 (반드시 호출) |
-| `mimi_ffi_fill_buffer(handle, buffer, frame_count)` | 오디오 콜백에서 버퍼 채우기 |
-| `mimi_ffi_load_song(handle, midi_data, data_len)` | MIDI 바이너리 로드 |
-| `mimi_ffi_play(handle)` | 재생 시작 |
-| `mimi_ffi_pause(handle)` | 일시정지 |
-| `mimi_ffi_stop(handle)` | 정지 및 초기화 |
-| `mimi_ffi_set_key(handle, key)` | 조옮김 설정 (-15 ~ +15) |
-| `mimi_ffi_set_tempo(handle, tempo)` | 템포 배율 설정 (0.2 ~ 5.0) |
-| `mimi_ffi_set_volume(handle, volume)` | 마스터 볼륨 설정 (0 ~ 100) |
-| `mimi_ffi_seek(handle, tick)` | 틱 위치로 이동 |
-| `mimi_ffi_set_rhythm(handle, rhythm)` | 리듬 모드 설정 (아래 표 참조) |
-| `mimi_ffi_get_status(handle, out)` | 상태 조회. 성공 시 1, 실패 시 0 반환 |
+| 함수                                                  | 설명                       |
+| --------------------------------------------------- | ------------------------ |
+| `mimi_ffi_create(sf_path, sample_rate)`             | 핸들 생성. 실패 시 null 반환      |
+| `mimi_ffi_destroy(handle)`                          | 핸들 해제 (반드시 호출)           |
+| `mimi_ffi_fill_buffer(handle, buffer, frame_count)` | 오디오 콜백에서 버퍼 채우기          |
+| `mimi_ffi_load_song(handle, midi_data, data_len)`   | MIDI 바이너리 로드             |
+| `mimi_ffi_play(handle)`                             | 재생 시작                    |
+| `mimi_ffi_pause(handle)`                            | 일시정지                     |
+| `mimi_ffi_stop(handle)`                             | 정지 및 초기화                 |
+| `mimi_ffi_set_key(handle, key)`                     | 조옮김 설정 (-15 \~ +15)      |
+| `mimi_ffi_set_tempo(handle, tempo)`                 | 템포 배율 설정 (0.2 \~ 5.0)    |
+| `mimi_ffi_set_volume(handle, volume)`               | 마스터 볼륨 설정 (0 \~ 100)     |
+| `mimi_ffi_seek(handle, tick)`                       | 틱 위치로 이동                 |
+| `mimi_ffi_set_rhythm(handle, rhythm)`               | 리듬 모드 설정 (아래 표 참조)       |
+| `mimi_ffi_get_status(handle, out)`                  | 상태 조회. 성공 시 1, 실패 시 0 반환 |
 
 #### 리듬 모드 상수
 
-| 값 | 리듬 |
-|----|------|
+| 값 | 리듬            |
+| - | ------------- |
 | 0 | Original (원곡) |
-| 1 | Disco |
-| 2 | GoGo |
-| 3 | Dance |
-| 4 | Techno |
-| 5 | Hiphop |
-| 6 | Jitterbug |
-| 7 | Edm (EDM) |
-| 8 | Edm2 |
+| 1 | Disco         |
+| 2 | GoGo          |
+| 3 | Dance         |
+| 4 | Techno        |
+| 5 | Hiphop        |
+| 6 | Jitterbug     |
+| 7 | Edm (EDM)     |
+| 8 | Edm2          |
 
 #### `MimiFfiStatus` 구조체
 
@@ -371,7 +371,7 @@ typedef struct {
 } MimiFfiStatus;
 ```
 
-#### mimi_ffi 빌드
+#### mimi\_ffi 빌드
 
 ```bash
 # .dll / .so / .dylib 생성
@@ -380,7 +380,7 @@ cargo build --release -p mimi_ffi
 
 빌드 결과물은 `target/release/` 아래 플랫폼별 확장자로 생성된다.
 
----
+***
 
 ### `MimiCommand`
 
@@ -432,20 +432,20 @@ FluidsynthWarning { message }                        // Fluidsynth/Fluidlite 경
 
 `get_status()`로 조회하는 통합 상태 구조체이다.
 
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `state` | `PlayerState` | 현재 재생 상태 (Stopped / Playing / Paused) |
-| `current_tick` | `u64` | 현재 틱 위치 |
-| `total_tick` | `u64` | 전체 틱 수 |
-| `current_time` | `Duration` | 경과 시간 |
-| `tempo` | `f32` | 현재 템포 배율 |
-| `key` | `i8` | 현재 조옮김 오프셋 |
-| `volume` | `u8` | 현재 마스터 볼륨 |
-| `current_rhythm` | `Rhythm` | 현재 리듬 모드 |
-| `current_tempo` | `i32` | MIDI 파일 원본 템포 (µs/beat) |
-| `is_bs_detected` | `bool` | $BS(베이스) 트랙 검출 여부 |
-| `song_key_sig` | `Option<(i8, bool)>` | MIDI 파일에 정의된 원곡 키 시그니처 (샤프/플랫 수, 단조 여부) |
-| `is_female` | `Option<bool>` | 멜로디 피치 분석을 기반으로 추정한 곡의 성별 (true: 여성, false: 남성) |
+| 필드               | 타입                   | 설명                                              |
+| ---------------- | -------------------- | ----------------------------------------------- |
+| `state`          | `PlayerState`        | 현재 재생 상태 (Stopped / Playing / Paused)           |
+| `current_tick`   | `u64`                | 현재 틱 위치                                         |
+| `total_tick`     | `u64`                | 전체 틱 수                                          |
+| `current_time`   | `Duration`           | 경과 시간                                           |
+| `tempo`          | `f32`                | 현재 템포 배율                                        |
+| `key`            | `i8`                 | 현재 조옮김 오프셋                                      |
+| `volume`         | `u8`                 | 현재 마스터 볼륨                                       |
+| `current_rhythm` | `Rhythm`             | 현재 리듬 모드                                        |
+| `current_tempo`  | `i32`                | MIDI 파일 원본 템포 (µs/beat)                         |
+| `is_bs_detected` | `bool`               | $BS(베이스) 트랙 검출 여부                               |
+| `song_key_sig`   | `Option<(i8, bool)>` | MIDI 파일에 정의된 원곡 키 시그니처 (샤프/플랫 수, 단조 여부)         |
+| `is_female`      | `Option<bool>`       | 멜로디 피치 분석을 기반으로 추정한 곡의 성별 (true: 여성, false: 남성) |
 
 ## 빌드 및 실행
 
@@ -464,30 +464,29 @@ cargo build --release -p mimi_ffi
 
 ### 플레이어 조작키
 
-| 키 / 마우스 | 동작 |
-|---|------|
-| `↑` / `↓` | 파일 선택 |
-| `Enter` | 파일 로드 및 재생 |
-| `Space` | 재생 / 일시정지 토글 |
-| `s` | 정지 |
-| `,` / `.` | 키(음정) 내림 / 올림 |
-| `[` / `]` | 템포 내림 / 올림 (0.1 단위) |
-| `-` / `=` | 볼륨 내림 / 올림 (5 단위) |
-| `←` / `→` | 100틱 뒤로 / 앞으로 이동 (`Shift` 조합 시 500틱 단위) |
-| 마우스 왼쪽 클릭/드래그 | 재생 상태바에서 해당 위치로 직접 이동 (Seek) |
-| `Esc` | 재생 정지 및 파일 리스트 화면으로 복귀 |
+| 키 / 마우스       | 동작                                      |
+| ------------- | --------------------------------------- |
+| `↑` / `↓`     | 파일 선택                                   |
+| `Enter`       | 파일 로드 및 재생                              |
+| `Space`       | 재생 / 일시정지 토글                            |
+| `s`           | 정지                                      |
+| `,` / `.`     | 키(음정) 내림 / 올림                           |
+| `[` / `]`     | 템포 내림 / 올림 (0.1 단위)                     |
+| `-` / `=`     | 볼륨 내림 / 올림 (5 단위)                       |
+| `←` / `→`     | 100틱 뒤로 / 앞으로 이동 (`Shift` 조합 시 500틱 단위) |
+| 마우스 왼쪽 클릭/드래그 | 재생 상태바에서 해당 위치로 직접 이동 (Seek)            |
+| `Esc`         | 재생 정지 및 파일 리스트 화면으로 복귀                  |
 
-## 라이선스
+## Open Source License
 
-### 오픈소스 라이선스
-
-| 크레이트 | 라이선스 | 라이선스 사본 |
-|---------|---------|-------------|
-| `fluidlite` | LGPL-2.1 | [LICENSE](https://github.com/katyo/fluidlite/blob/master/LICENSE) |
-| `midly` | Unlicense | [LICENSE](https://github.com/kovaxis/midly/blob/master/LICENSE) |
-| `cpal` | Apache-2.0 | [LICENSE](https://github.com/RustAudio/cpal/blob/master/LICENSE) |
+| Crate               | License          | Link                                                                                                                                                          |
+| ------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fluidlite`         | LGPL-2.1         | [LICENSE](https://github.com/katyo/fluidlite/blob/master/LICENSE)                                                                                             |
+| `midly`             | Unlicense        | [LICENSE](https://github.com/kovaxis/midly/blob/master/LICENSE)                                                                                               |
+| `cpal`              | Apache-2.0       | [LICENSE](https://github.com/RustAudio/cpal/blob/master/LICENSE)                                                                                              |
 | `crossbeam-channel` | MIT / Apache-2.0 | [MIT](https://github.com/crossbeam-rs/crossbeam/blob/master/LICENSE-MIT) / [Apache-2.0](https://github.com/crossbeam-rs/crossbeam/blob/master/LICENSE-APACHE) |
-| `ratatui` | MIT | [LICENSE](https://github.com/ratatui/ratatui/blob/main/LICENSE) |
-| `crossterm` | MIT | [LICENSE](https://github.com/crossterm-rs/crossterm/blob/master/LICENSE) |
-| `anyhow` | MIT / Apache-2.0 | [MIT](https://github.com/dtolnay/anyhow/blob/master/LICENSE-MIT) / [Apache-2.0](https://github.com/dtolnay/anyhow/blob/master/LICENSE-APACHE) |
-| `color-eyre` | MIT / Apache-2.0 | [MIT](https://github.com/eyre-rs/eyre/blob/master/LICENSE-MIT) / [Apache-2.0](https://github.com/eyre-rs/eyre/blob/master/LICENSE-APACHE) |
+| `ratatui`           | MIT              | [LICENSE](https://github.com/ratatui/ratatui/blob/main/LICENSE)                                                                                               |
+| `crossterm`         | MIT              | [LICENSE](https://github.com/crossterm-rs/crossterm/blob/master/LICENSE)                                                                                      |
+| `anyhow`            | MIT / Apache-2.0 | [MIT](https://github.com/dtolnay/anyhow/blob/master/LICENSE-MIT) / [Apache-2.0](https://github.com/dtolnay/anyhow/blob/master/LICENSE-APACHE)                 |
+| `color-eyre`        | MIT / Apache-2.0 | [MIT](https://github.com/eyre-rs/eyre/blob/master/LICENSE-MIT) / [Apache-2.0](https://github.com/eyre-rs/eyre/blob/master/LICENSE-APACHE)                     |
+
