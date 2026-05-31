@@ -291,7 +291,8 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                                     Rhythm::Dance => Rhythm::Hiphop,
                                     Rhythm::Hiphop => Rhythm::Jitterbug,
                                     Rhythm::Jitterbug => Rhythm::Edm,
-                                    Rhythm::Edm => Rhythm::Original,
+                                    Rhythm::Edm => Rhythm::Edm2,
+                                    Rhythm::Edm2 => Rhythm::Original,
                                 };
                                 if handle.send_command(MimiCommand::SetRhythm(next_rhythm)).is_ok() {
                                     app.engine_status.current_rhythm = next_rhythm;
@@ -717,6 +718,7 @@ fn render(frame: &mut Frame, app: &mut App) {
                             Rhythm::Hiphop => "HIPHOP BOOM-BAP",
                             Rhythm::Jitterbug => "JITTERBUG KKUNG-JJA",
                             Rhythm::Edm => "EDM SUPER SAW",
+                            Rhythm::Edm2 => "EDM2 4/4",
                         },
                         Style::default()
                             .fg(if app.engine_status.current_rhythm == Rhythm::Original { Color::DarkGray } else { Color::Green })

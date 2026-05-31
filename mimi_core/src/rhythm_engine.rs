@@ -11,6 +11,7 @@ pub enum Rhythm {
     Hiphop,
     Jitterbug,
     Edm,
+    Edm2,
     Original, // 원곡 (꺼짐)
 }
 
@@ -611,6 +612,112 @@ impl RhythmEngine {
         self.pattern_library.insert(Rhythm::Edm, AdvancedRhythmPattern {
             length_ticks: 1920,
             tracks: edm_tracks,
+        });
+
+        // 8. EDM2 패턴 (EDM 리듬변환 패턴 - 패턴 A+B 결합)
+        let mut edm2_tracks = Vec::new();
+        let mut edm2_drum_notes = Vec::new();
+
+        // 패턴 A 드럼 (0~1920)
+        // 4비트 킥 드럼 (Key 36) + 백비트 스네어 (Key 40)
+        for &tick in &[0, 480, 960, 1440] {
+            edm2_drum_notes.push(MidiNote { tick, note_number: 36, velocity: 100, channel: 9 });
+            edm2_drum_notes.push(MidiNote { tick: tick + 100, note_number: 36, velocity: 0, channel: 9 });
+        }
+        // 백비트 스네어 (Key 40)
+        for &tick in &[480, 1440] {
+            edm2_drum_notes.push(MidiNote { tick, note_number: 40, velocity: 100, channel: 9 });
+            edm2_drum_notes.push(MidiNote { tick: tick + 100, note_number: 40, velocity: 0, channel: 9 });
+        }
+
+        // 패턴 B 드럼 (1920~3840)
+        // 4비트 킥 드럼 (Key 36)
+        for &tick in &[1920, 2400, 2880, 3360] {
+            edm2_drum_notes.push(MidiNote { tick, note_number: 36, velocity: 100, channel: 9 });
+            edm2_drum_notes.push(MidiNote { tick: tick + 100, note_number: 36, velocity: 0, channel: 9 });
+        }
+        // 백비트 스네어 (Key 40)
+        for &tick in &[2400, 3360] {
+            edm2_drum_notes.push(MidiNote { tick, note_number: 40, velocity: 100, channel: 9 });
+            edm2_drum_notes.push(MidiNote { tick: tick + 100, note_number: 40, velocity: 0, channel: 9 });
+        }
+        // 클랩 레이어 (Key 39)
+        for &tick in &[2880, 3000, 3120, 3360, 3600] {
+            edm2_drum_notes.push(MidiNote { tick, note_number: 39, velocity: 100, channel: 9 });
+            edm2_drum_notes.push(MidiNote { tick: tick + 100, note_number: 39, velocity: 0, channel: 9 });
+        }
+
+        edm2_tracks.push(RhythmTrack {
+            track_type: TrackType::Drum,
+            instrument_program: 25, // TR-808 Analog Kit
+            notes: edm2_drum_notes,
+        });
+
+        // 베이스 트랙 (Synth Bass 1 - GM 38)
+        let mut edm2_bass_notes = Vec::new();
+        // 패턴 A+B 결합 (0~3840)
+        let edm2_bass_ticks = [
+            (240, 480),
+            (720, 960),
+            (1200, 1440),
+            (1680, 1920),
+            (2160, 2400),
+            (2640, 2880),
+            (3120, 3360),
+            (3600, 3840),
+        ];
+        for &(start_tick, end_tick) in &edm2_bass_ticks {
+            edm2_bass_notes.push(MidiNote {
+                tick: start_tick,
+                note_number: 35, // B1 (MIDI 파일에서 추출한 베이스 음)
+                velocity: 100,
+                channel: 1,
+            });
+            edm2_bass_notes.push(MidiNote {
+                tick: end_tick,
+                note_number: 35,
+                velocity: 0,
+                channel: 1,
+            });
+        }
+
+        edm2_tracks.push(RhythmTrack {
+            track_type: TrackType::Bass,
+            instrument_program: 38, // Synth Bass 1
+            notes: edm2_bass_notes,
+        });
+
+        // 반주 트랙 (Sawtooth Lead - GM 81)
+        let mut edm2_synth_notes = Vec::new();
+        // 패턴 A+B 결합 (0~3840)
+        let edm2_synth_ticks = [240, 720, 1200, 1680, 2160, 2640, 3120, 3600];
+        for &tick in &edm2_synth_ticks {
+            // C4(60), E4(64), G4(67) - 3성부 구성
+            for &note in &[60, 64, 67] {
+                edm2_synth_notes.push(MidiNote {
+                    tick,
+                    note_number: note,
+                    velocity: 100,
+                    channel: 2,
+                });
+                edm2_synth_notes.push(MidiNote {
+                    tick: tick + 240,
+                    note_number: note,
+                    velocity: 0,
+                    channel: 2,
+                });
+            }
+        }
+
+        edm2_tracks.push(RhythmTrack {
+            track_type: TrackType::Accompaniment,
+            instrument_program: 81, // Sawtooth Lead
+            notes: edm2_synth_notes,
+        });
+
+        self.pattern_library.insert(Rhythm::Edm2, AdvancedRhythmPattern {
+            length_ticks: 3840,
+            tracks: edm2_tracks,
         });
     }
 

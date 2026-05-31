@@ -211,6 +211,7 @@ pub extern "C" fn mimi_ffi_get_status(
                 Rhythm::Hiphop    => 5,
                 Rhythm::Jitterbug => 6,
                 Rhythm::Edm       => 7,
+                Rhythm::Edm2      => 8,
             };
             unsafe {
                 (*out).state           = state_int;
