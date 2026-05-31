@@ -82,7 +82,6 @@ impl App {
                 is_bs_detected: false,
                 current_tempo: 500_000,
                 song_key_sig: None,
-                is_female: None,
             },
             file_list: Vec::new(),
             selected_index: 0,
@@ -458,8 +457,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     || app.engine_status.key != status.key
                     || app.engine_status.volume != status.volume
                     || app.engine_status.is_bs_detected != status.is_bs_detected
-                    || app.engine_status.song_key_sig != status.song_key_sig
-                    || app.engine_status.is_female != status.is_female;
+                    || app.engine_status.song_key_sig != status.song_key_sig;
                 app.engine_status = status;
                 if changed {
                     needs_redraw = true;
@@ -766,7 +764,7 @@ fn render(frame: &mut Frame, app: &mut App) {
                     if let Some((sf, is_minor)) = app.engine_status.song_key_sig {
                         format!(
                             " [{}]",
-                            key_name_with_gender(sf, is_minor, app.engine_status.key, app.engine_status.is_female)
+                            key_name(sf, is_minor, app.engine_status.key)
                         )
                     } else {
                         String::new()
@@ -952,11 +950,11 @@ fn centered_rect(
         .split(popup_layout[1])[1]
 }
 
-// 조옮김 오프셋을 적용한 최종 조성명과 여성키/남성키 판별 문자열 반환
-// sf       : MIDI KeySignature 샤프/플랫 수 (-7 ~ +7)
+// 조옮김 오프셋을 적용한 최종 조성명 반환
+// sf       : MIDI KeySignature (-7 ~ +7)
 // is_minor : 단조 여부 (midly는 단조=true, 장조=false 로 정의함)
 // key_offset: 현재 사용자가 설정한 조옮김 반음 오프셋
-fn key_name_with_gender(sf: i8, is_minor: bool, key_offset: i8, is_female: Option<bool>) -> String {
+fn key_name(sf: i8, is_minor: bool, key_offset: i8) -> String {
     // 장조 근음 테이블: sf = -7 ~ +7, 인덱스 = sf + 7
     // Cb=11, Gb=6, Db=1, Ab=8, Eb=3, Bb=10, F=5, C=0, G=7, D=2, A=9, E=4, B=11, F#=6, C#=1
     let major_roots: [u8; 15] = [11, 6, 1, 8, 3, 10, 5, 0, 7, 2, 9, 4, 11, 6, 1];
@@ -977,21 +975,6 @@ fn key_name_with_gender(sf: i8, is_minor: bool, key_offset: i8, is_female: Optio
     let mode = if is_minor { "m" } else { "" };
     let name = root_names[final_root as usize];
 
-    // 여성키/남성키 판별 (멜로디 피치 분석 기반)
-    let gender = match is_female {
-        Some(true) => {
-            // 본래 여성곡: 키 오프셋이 -4 이하로 내려가면 남성키로 전환
-            if key_offset <= -4 { "Male" } else { "Female" }
-        }
-        Some(false) => {
-            // 본래 남성곡: 키 오프셋이 +4 이상으로 올라가면 여성키로 전환
-            if key_offset >= 4 { "Female" } else { "Male" }
-        }
-        None => {
-            // 분석 정보가 없을 경우 폴백: 절대 조성 기준으로 구분
-            if final_root >= 6 { "Female" } else { "Male" }
-        }
-    };
-
-    format!("{}{} ({})", name, mode, gender)
+    //남/여 판별은 정확 하지 않음으로 삭제
+    format!("{}{}", name, mode)
 }

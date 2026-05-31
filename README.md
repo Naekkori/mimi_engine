@@ -445,7 +445,6 @@ FluidsynthWarning { message }                        // Fluidsynth/Fluidlite 경
 | `current_tempo`  | `i32`                | MIDI 파일 원본 템포 (µs/beat)                         |
 | `is_bs_detected` | `bool`               | $BS(베이스) 트랙 검출 여부                               |
 | `song_key_sig`   | `Option<(i8, bool)>` | MIDI 파일에 정의된 원곡 키 시그니처 (샤프/플랫 수, 단조 여부)         |
-| `is_female`      | `Option<bool>`       | 멜로디 피치 분석을 기반으로 추정한 곡의 성별 (true: 여성, false: 남성) |
 
 ## 빌드 및 실행
 

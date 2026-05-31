@@ -86,8 +86,6 @@ pub struct MimiSequencer {
     pub melody_channels: Vec<(u8, u8)>,
     // 실제 미디 파일 트랙에서 $BS (또는 bass 명시 트랙)이 감지되었는지 여부
     pub is_bs_track_detected: bool,
-    // 가이드 멜로디 피치 분석 결과 곡의 성별 (true: 여성, false: 남성, None: 분석 불가)
-    pub is_female: Option<bool>,
 }
 
 impl MimiSequencer {
@@ -103,7 +101,6 @@ impl MimiSequencer {
             chord_timeline: Vec::new(),
             melody_channels: Vec::new(),
             is_bs_track_detected: false,
-            is_female: None,
         }
     }
 
@@ -119,7 +116,6 @@ impl MimiSequencer {
         let mut detected_format = MidiFormat::GM;
         let mut chord_timeline: Vec<BsChordEvent> = Vec::new();
         let mut melody_channels: Vec<(u8, u8)> = Vec::new();
-        let mut melody_notes = Vec::new();
 
         // 가사 이벤트를 수집하여 $BS 베이스 라인이 아예 없을 때의 폴백용 코드 구조
         let mut lyric_chords: Vec<(u32, String)> = Vec::new();
@@ -406,15 +402,6 @@ impl MimiSequencer {
                             }
                         }
 
-                        // 멜로디 채널 노트 수집
-                        if melody_channels.contains(&(current_port, ch_byte)) && !is_drum {
-                            if let midly::MidiMessage::NoteOn { key, vel } = message {
-                                if vel.as_int() > 0 {
-                                    melody_notes.push(key.as_int());
-                                }
-                            }
-                        }
-
                         all_events.push(SequenceEvent {
                             absolute_tick: accum_tick,
                             priority,
@@ -528,17 +515,6 @@ impl MimiSequencer {
         let initial_per_beat = 500_000.0;
         let microseconds_per_tick = initial_per_beat / ppq as f64;
 
-        // 가이드 멜로디 피치를 기반으로 성별 판정
-        let is_female = if !melody_notes.is_empty() {
-            let max_note = *melody_notes.iter().max().unwrap();
-            let sum_note: u64 = melody_notes.iter().map(|&n| n as u64).sum();
-            let avg_note = sum_note as f64 / melody_notes.len() as f64;
-            // 최고음이 C5(72) 이상이거나 평균음이 F#4(66) 이상이면 여성 키로 판정
-            Some(max_note >= 72 || avg_note >= 66.0)
-        } else {
-            None
-        };
-
         Ok(Self {
             event: all_events,
             ppq,
@@ -550,7 +526,6 @@ impl MimiSequencer {
             chord_timeline,
             melody_channels,
             is_bs_track_detected,
-            is_female,
         })
     }
     //시간 경과에 따라 틱을 전진시키고

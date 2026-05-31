@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "mimi_core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1008,14 +1008,14 @@ dependencies = [
 
 [[package]]
 name = "mimi_ffi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mimi_core",
 ]
 
 [[package]]
 name = "mimi_player"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "color-eyre",
