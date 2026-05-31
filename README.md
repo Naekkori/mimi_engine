@@ -419,8 +419,10 @@ MidiReset                                          // 시스템 리셋
 TickUpdate { current_tick, total_tick }            // 재생 진행 위치
 ChannelLevel { port, levels }                      // 채널 레벨미터
 SetDrumChannel { port, channel, is_drum }          // 드럼 채널 설정 변경
-ChordUpdate { root_pitch, is_minor }               // 실시간 코드 상태 (디버그)
-FluidsynthWarning { message }                      // Fluidsynth/Fluidlite 경고 및 에러 메시지
+ChordUpdate { root_pitch, is_minor, is_7th, is_maj7 } // 실시간 코드 상태 (디버그)
+RhythmEngineControl { command, mask_lo, mask_hi }    // 리듬엔진 제어
+KeySignature { key }                                 // 미디파일에 정의된 음정
+FluidsynthWarning { message }                        // Fluidsynth/Fluidlite 경고 및 에러 메시지
 ```
 
 ### `MimiEngineStatus`
@@ -439,6 +441,8 @@ FluidsynthWarning { message }                      // Fluidsynth/Fluidlite 경�
 | `current_rhythm` | `Rhythm` | 현재 리듬 모드 |
 | `current_tempo` | `i32` | MIDI 파일 원본 템포 (µs/beat) |
 | `is_bs_detected` | `bool` | $BS(베이스) 트랙 검출 여부 |
+| `song_key_sig` | `Option<(i8, bool)>` | MIDI 파일에 정의된 원곡 키 시그니처 (샤프/플랫 수, 단조 여부) |
+| `is_female` | `Option<bool>` | 멜로디 피치 분석을 기반으로 추정한 곡의 성별 (true: 여성, false: 남성) |
 
 ## 빌드 및 실행
 
