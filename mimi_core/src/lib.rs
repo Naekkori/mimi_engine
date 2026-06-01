@@ -114,6 +114,10 @@ pub struct AudioPlaybackContext {
     bank_lsb: [[u8; 16]; 2],
     drum_channels: [[bool; 16]; 2],
     channel_velocities: [[u8; 16]; 2],
+    // RPN/NRPN 상태 추적 (CC#6 = Data Entry MSB 처리용)
+    rpn_msb: [[u8; 16]; 2],
+    rpn_lsb: [[u8; 16]; 2],
+    nrpn_active: [[bool; 16]; 2],
 
     // 실시간 리듬변환 개입 모듈
     rhythm_engine: RhythmEngine,
@@ -229,6 +233,11 @@ impl AudioPlaybackContext {
                         pitch_bend_range: None,
                     }; 16]; 2];
 
+                    // seek_to 전용 RPN/NRPN 상태 추적
+                    let mut seek_rpn_msb = [[127u8; 16]; 2];
+                    let mut seek_rpn_lsb = [[127u8; 16]; 2];
+                    let mut seek_nrpn_active = [[false; 16]; 2];
+
                     // Seek 지점 이전 이벤트 중 상태성 이벤트만 추적
                     for i in 0..self.sequencer.current_event_index {
                         let event = &self.sequencer.event[i];
@@ -250,6 +259,9 @@ impl AudioPlaybackContext {
                                 self.drum_channels = [[false; 16]; 2];
                                 self.drum_channels[0][9] = true;
                                 self.drum_channels[1][9] = true;
+                                seek_rpn_msb = [[127u8; 16]; 2];
+                                seek_rpn_lsb = [[127u8; 16]; 2];
+                                seek_nrpn_active = [[false; 16]; 2];
                             }
                             MidiEngineEvent::MidiPlay { port, channel, is_drum_channel: _, kind } => {
                                 let p = (*port).min(1) as usize;
@@ -287,9 +299,25 @@ impl AudioPlaybackContext {
                                                 11 => {
                                                     channel_presets[p][ch].expression = Some(val);
                                                 }
-                                                // RPN Pitch Bend Range의 Data Entry MSB(CC 6) 추적
+                                                // RPN/NRPN 상태 추적 후 Pitch Bend Range 판별
                                                 6 => {
-                                                    channel_presets[p][ch].pitch_bend_range = Some(val);
+                                                    if !seek_nrpn_active[p][ch]
+                                                        && seek_rpn_msb[p][ch] == 0
+                                                        && seek_rpn_lsb[p][ch] == 0
+                                                    {
+                                                        channel_presets[p][ch].pitch_bend_range = Some(val);
+                                                    }
+                                                }
+                                                99 => {
+                                                    seek_nrpn_active[p][ch] = true;
+                                                }
+                                                101 => {
+                                                    seek_rpn_msb[p][ch] = val;
+                                                    seek_nrpn_active[p][ch] = false;
+                                                }
+                                                100 => {
+                                                    seek_rpn_lsb[p][ch] = val;
+                                                    seek_nrpn_active[p][ch] = false;
                                                 }
                                                 _ => {}
                                             }
@@ -413,6 +441,9 @@ impl AudioPlaybackContext {
                     // 내부상태 초기화
                     self.bank_msb = [[0u8; 16]; 2];
                     self.bank_lsb = [[0u8; 16]; 2];
+                    self.rpn_msb = [[127u8; 16]; 2];
+                    self.rpn_lsb = [[127u8; 16]; 2];
+                    self.nrpn_active = [[false; 16]; 2];
                     self.drum_channels = {
                         let mut dc = [[false; 16]; 2];
                         dc[0][9] = true;
@@ -531,6 +562,11 @@ impl AudioPlaybackContext {
             pitch_bend_range: None,
         }; 16]; 2];
 
+        // seek_to 전용 RPN/NRPN 상태 추적 (CC#6 = Pitch Bend Range 판별용)
+        let mut seek_rpn_msb = [[127u8; 16]; 2];
+        let mut seek_rpn_lsb = [[127u8; 16]; 2];
+        let mut seek_nrpn_active = [[false; 16]; 2];
+
         // 현재 재생 틱 이전의 미디 설정 이벤트 스캔
         let current_index = self.sequencer.current_event_index;
         for i in 0..current_index {
@@ -547,6 +583,9 @@ impl AudioPlaybackContext {
                         pitch_bend: None,
                         pitch_bend_range: None,
                     }; 16]; 2];
+                    seek_rpn_msb = [[127u8; 16]; 2];
+                    seek_rpn_lsb = [[127u8; 16]; 2];
+                    seek_nrpn_active = [[false; 16]; 2];
                 }
                 MidiEngineEvent::MidiPlay { port, channel, is_drum_channel: _, kind } => {
                     let p = (*port).min(1) as usize;
@@ -562,8 +601,26 @@ impl AudioPlaybackContext {
                                     7 => channel_presets[p][ch].volume = Some(val),
                                     10 => channel_presets[p][ch].pan = Some(val),
                                     11 => channel_presets[p][ch].expression = Some(val),
-                                    // RPN Pitch Bend Range의 Data Entry MSB(CC 6) 추적
-                                    6 => channel_presets[p][ch].pitch_bend_range = Some(val),
+                                    // RPN/NRPN 상태 추적 후 Pitch Bend Range 판별
+                                    6 => {
+                                        if !seek_nrpn_active[p][ch]
+                                            && seek_rpn_msb[p][ch] == 0
+                                            && seek_rpn_lsb[p][ch] == 0
+                                        {
+                                            channel_presets[p][ch].pitch_bend_range = Some(val);
+                                        }
+                                    }
+                                    99 => {
+                                        seek_nrpn_active[p][ch] = true;
+                                    }
+                                    101 => {
+                                        seek_rpn_msb[p][ch] = val;
+                                        seek_nrpn_active[p][ch] = false;
+                                    }
+                                    100 => {
+                                        seek_rpn_lsb[p][ch] = val;
+                                        seek_nrpn_active[p][ch] = false;
+                                    }
                                     _ => {}
                                 }
                             }
@@ -680,6 +737,9 @@ impl AudioPlaybackContext {
                         self.drum_channels[0][9] = true;
                         self.drum_channels[1][9] = true;
                         self.drum_channels[1][15] = true; // 리듬 드럼 격리 전용 채널 활성화 락
+                        self.rpn_msb = [[127u8; 16]; 2];
+                        self.rpn_lsb = [[127u8; 16]; 2];
+                        self.nrpn_active = [[false; 16]; 2];
 
                         for ch in 0u32..16{
                             let _ = self.synth_a.cc(ch, 0, 0);
@@ -796,6 +856,39 @@ impl AudioPlaybackContext {
                                         }
                                         32 => {
                                             self.bank_lsb[p][ch] = cc_val;
+                                        }
+                                        // RPN/NRPN 상태 추적 (노래방 미디 CC#6 오염 방지)
+                                        6 => {
+                                            // CC#6 = Data Entry MSB: 현재 RPN/NRPN 컨텍스트에 따라 해석
+                                            if self.nrpn_active[p][ch] {
+                                                // NRPN 활성 상태 → fluidlite로 전달 (GS 튜닝 등)
+                                                let _ = synth.cc(target_channel, cc_num as u32, cc_val as u32);
+                                            } else if self.rpn_msb[p][ch] == 0 && self.rpn_lsb[p][ch] == 0 {
+                                                // RPN (0,0) = Pitch Bend Range → 전용 API로 직접 설정
+                                                let _ = synth.pitch_wheel_sens(target_channel, cc_val as u32);
+                                            }
+                                            // 그 외 RPN 콤보는 무시 (정의되지 않은 RPN 조합)
+                                        }
+                                        99 => {
+                                            // NRPN MSB → NRPN 모드 활성화
+                                            self.nrpn_active[p][ch] = true;
+                                            let _ = synth.cc(target_channel, cc_num as u32, cc_val as u32);
+                                        }
+                                        98 => {
+                                            // NRPN LSB
+                                            let _ = synth.cc(target_channel, cc_num as u32, cc_val as u32);
+                                        }
+                                        101 => {
+                                            // RPN MSB → RPN 모드 활성화 (NRPN 해제)
+                                            self.rpn_msb[p][ch] = cc_val;
+                                            self.nrpn_active[p][ch] = false;
+                                            let _ = synth.cc(target_channel, cc_num as u32, cc_val as u32);
+                                        }
+                                        100 => {
+                                            // RPN LSB
+                                            self.rpn_lsb[p][ch] = cc_val;
+                                            self.nrpn_active[p][ch] = false;
+                                            let _ = synth.cc(target_channel, cc_num as u32, cc_val as u32);
                                         }
                                         _ => {
                                             let _ = synth.cc(target_channel, cc_num as u32, cc_val as u32);
@@ -1197,6 +1290,9 @@ pub fn create_mimi_engine(
             dc
         },
         channel_velocities: [[0u8; 16]; 2],
+        rpn_msb: [[127u8; 16]; 2],
+        rpn_lsb: [[127u8; 16]; 2],
+        nrpn_active: [[false; 16]; 2],
         rhythm_engine: RhythmEngine::new(Rhythm::Original),
         generated_rhythm_notes: Vec::new(),
         next_rhythm_note_index: 0,
