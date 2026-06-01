@@ -132,11 +132,32 @@ mimi_ffi_fill_buffer(handle, audio_buffer, frame_count);
 mimi_ffi_destroy(handle);
 ```
 
+#### Async Initialization Example (for Game Engine Update Loop)
+
+```c
+// 1. Start async initialization (returns immediately)
+MimiFfiHandle* handle = mimi_ffi_create_async("assets/soundfont.sf2", 48000.0f);
+
+// 2. Poll progress in Update() every frame
+float progress;
+const char* msg;
+int state = mimi_ffi_get_init_progress(handle, &progress, &msg);
+// state: 0=loading (show progress bar), 1=ready (start game), -1=failed
+
+// 3. Once ready, use normally
+if (state == 1) {
+    mimi_ffi_load_song(handle, midi_bytes, midi_len);
+    mimi_ffi_play(handle);
+}
+```
+
 #### FFI Function Reference
 
 | Function                                            | Description                                                          |
 | --------------------------------------------------- | -------------------------------------------------------------------- |
 | `mimi_ffi_create(sf_path, sample_rate)`             | Spawns a handle. Returns null on failure.                            |
+| `mimi_ffi_create_async(sf_path, sample_rate)`       | Spawns a handle asynchronously (non-blocking). Returns null on failure. |
+| `mimi_ffi_get_init_progress(handle, out_progress, out_message)` | Polls async init progress. 0=initializing, 1=done, -1=failed.  |
 | `mimi_ffi_destroy(handle)`                          | Deallocates engine objects (Must be called to prevent memory leaks). |
 | `mimi_ffi_fill_buffer(handle, buffer, frame_count)` | Populates output audio buffer.                                       |
 | `mimi_ffi_load_song(handle, midi_data, data_len)`   | Loads MIDI binary into the sequencer.                                |
@@ -334,11 +355,32 @@ mimi_ffi_fill_buffer(handle, audio_buffer, frame_count);
 mimi_ffi_destroy(handle);
 ```
 
+#### 비동기 초기화 예시 (게임 엔진 Update() 루프용)
+
+```c
+// 1. 비동기 초기화 시작 (즉시 반환)
+MimiFfiHandle* handle = mimi_ffi_create_async("assets/soundfont.sf2", 48000.0f);
+
+// 2. Update()에서 매 프레임 폴링
+float progress;
+const char* msg;
+int state = mimi_ffi_get_init_progress(handle, &progress, &msg);
+// state: 0=로딩 중 (프로그레스바 표시), 1=완료 (게임 시작), -1=실패
+
+// 3. 완료 후 정상 사용
+if (state == 1) {
+    mimi_ffi_load_song(handle, midi_bytes, midi_len);
+    mimi_ffi_play(handle);
+}
+```
+
 #### C ABI 함수 목록
 
 | 함수                                                  | 설명                       |
 | --------------------------------------------------- | ------------------------ |
 | `mimi_ffi_create(sf_path, sample_rate)`             | 핸들 생성. 실패 시 null 반환      |
+| `mimi_ffi_create_async(sf_path, sample_rate)`       | 비동기 핸들 생성 (논블로킹). 실패 시 null 반환 |
+| `mimi_ffi_get_init_progress(handle, out_progress, out_message)` | 비동기 초기화 진행 상태 폴링. 0=초기화 중, 1=완료, -1=실패 |
 | `mimi_ffi_destroy(handle)`                          | 핸들 해제 (반드시 호출)           |
 | `mimi_ffi_fill_buffer(handle, buffer, frame_count)` | 오디오 콜백에서 버퍼 채우기          |
 | `mimi_ffi_load_song(handle, midi_data, data_len)`   | MIDI 바이너리 로드             |
