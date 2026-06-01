@@ -19,7 +19,14 @@ pub struct MimiFfiHandle {
     handle: MimiEngineHandle,
     context: AudioPlaybackContext,
 }
-
+// 엔진정보
+#[repr(C)]
+pub struct MimiFfiEngineInfo {
+    pub name: *const c_char,
+    pub version: *const c_char,
+    pub author: *const c_char,
+    pub license: *const c_char,
+}
 // FFI 경계를 통해 반환할 C 호환 상태 구조체
 #[repr(C)]
 pub struct MimiFfiStatus {
@@ -230,7 +237,26 @@ pub extern "C" fn mimi_ffi_get_status(
         Err(_) => 0,
     }
 }
+// 엔진정보 조회
+#[unsafe(no_mangle)]
+pub extern "C" fn mimi_ffi_get_engine_info(
+    handle: *const MimiFfiHandle,
+    out: *mut MimiFfiEngineInfo,
 
+) -> c_int {
+    if handle.is_null() || out.is_null() {
+        return 0;
+    }
+
+    let info = mimi_core::get_engine_info();
+    unsafe {
+        (*out).name = info.name.as_ptr().cast::<c_char>();
+        (*out).version = info.version.as_ptr().cast::<c_char>();
+        (*out).author = info.author.as_ptr().cast::<c_char>();
+        (*out).license = info.license.as_ptr().cast::<c_char>();
+    }
+    1
+}
 /// 핸들 해제 (반드시 호출해야 메모리 누수 없음)
 #[unsafe(no_mangle)]
 pub extern "C" fn mimi_ffi_destroy(handle: *mut MimiFfiHandle) {

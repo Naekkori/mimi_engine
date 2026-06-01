@@ -149,6 +149,7 @@ mimi_ffi_destroy(handle);
 | `mimi_ffi_seek(handle, tick)`                       | Seeks to a specific tick position.                                   |
 | `mimi_ffi_set_rhythm(handle, rhythm)`               | Switches rhythm styles (See table below).                            |
 | `mimi_ffi_get_status(handle, out)`                  | Queries engine status metrics. 1 on success, 0 on failure.           |
+| `mimi_ffi_get_engine_info(handle, out)`             | Queries engine info. 1 on success, 0 on failure.                     |
 
 #### Rhythm Codes
 
@@ -179,6 +180,17 @@ typedef struct {
     int   is_bs_detected;   // 0 or 1
     int   current_rhythm;   // Matching rhythm codes
 } MimiFfiStatus;
+```
+
+#### `MimiFfiEngineInfo` Structure
+
+```c
+typedef struct {
+    const char* name;       // Engine name
+    const char* version;    // Engine version
+    const char* author;     // Author
+    const char* license;    // License
+} MimiFfiEngineInfo;
 ```
 
 #### Build Instructions
@@ -339,6 +351,7 @@ mimi_ffi_destroy(handle);
 | `mimi_ffi_seek(handle, tick)`                       | 틱 위치로 이동                 |
 | `mimi_ffi_set_rhythm(handle, rhythm)`               | 리듬 모드 설정 (아래 표 참조)       |
 | `mimi_ffi_get_status(handle, out)`                  | 상태 조회. 성공 시 1, 실패 시 0 반환 |
+| `mimi_ffi_get_engine_info(handle, out)`             | 엔진 정보 조회. 성공 시 1, 실패 시 0 반환 |
 
 #### 리듬 모드 상수
 
@@ -369,6 +382,17 @@ typedef struct {
     int   is_bs_detected;   // 0 또는 1
     int   current_rhythm;   // 위 리듬 모드 상수와 동일
 } MimiFfiStatus;
+```
+
+#### `MimiFfiEngineInfo` 구조체
+
+```c
+typedef struct {
+    const char* name;       // 엔진 이름
+    const char* version;    // 엔진 버전
+    const char* author;     // 저작자
+    const char* license;    // 라이선스
+} MimiFfiEngineInfo;
 ```
 
 #### mimi\_ffi 빌드

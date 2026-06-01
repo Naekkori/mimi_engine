@@ -69,6 +69,14 @@ pub struct MimiEngineHandle {
     pub ui_rx: Receiver<MidiEngineEvent>, // 가사, 리듬 변환 플래그 등을 UI(Bevy) 쪽에서 받아갈 수 있는 채널
     pub ui_tx: Sender<MidiEngineEvent>,
 }
+// 엔진정보
+#[derive(Debug, Clone)]
+pub struct MimiEngineInfo {
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub license: String,
+}
 
 impl MimiEngineHandle {
     /// 현재 엔진의 통합 상태를 가져옴
@@ -1310,4 +1318,13 @@ pub fn create_mimi_engine(
     };
 
     Ok((handle, playback_context))
+}
+
+pub fn get_engine_info() -> MimiEngineInfo {
+    MimiEngineInfo {
+        name: "MimiEngine".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        author: env!("CARGO_PKG_AUTHORS").to_string().split(',').next().unwrap().to_string(),
+        license: env!("CARGO_PKG_LICENSE").to_string(),
+    }
 }
