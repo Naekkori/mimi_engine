@@ -39,6 +39,9 @@ mimi_engine/
 ├── mimi_ffi/           # C ABI FFI bindings (For game engine plugins)
 │   └── src/
 │       └── lib.rs          # Exported extern "C" functions (Builds .dll / .so / .dylib)
+├── mimi_gd/            # Godot GDExtension binding (gdext)
+│   └── src/
+│       └── lib.rs          # MimiEngine Node class for Godot
 ├── mimi_player/        # TUI-based reference player
 │   └── src/
 │       └── main.rs         # Terminal UI powered by ratatui
@@ -53,6 +56,7 @@ mimi_engine/
 mimi_core   ←── mimi_cpal   ←── mimi_player
      ↑
 mimi_ffi
+mimi_gd
 ```
 
 `mimi_core` does not depend on `cpal`. The audio output mechanism is decided by the upper-level caller.
@@ -81,6 +85,12 @@ mimi_ffi
 | `ratatui`    | Terminal user interface framework    |
 | `crossterm`  | Terminal raw mode and input handling |
 | `color-eyre` | Rich panic and error reporting       |
+
+#### mimi\_gd
+
+| Crate  | Purpose                                      |
+| ------ | -------------------------------------------- |
+| `godot`| Rust bindings for Godot engine (gdext 0.5.x) |
 
 ### Core APIs
 
@@ -225,7 +235,109 @@ cargo run -p mimi_player --release
 
 # Build C FFI Library
 cargo build --release -p mimi_ffi
+
+# Build Godot GDExtension Library
+cargo build --release -p mimi_gd
 ```
+
+### mimi\_gd (Godot GDExtension)
+
+`mimi_gd` is a GDExtension binding built with [gdext](https://github.com/godot-rust/gdext) that exposes the MIMI engine as a `MimiEngine` Node in Godot.
+
+#### Basic Usage (GDScript)
+
+```gdscript
+# Add MimiEngine node to scene, or create via code
+var engine = MimiEngine.new()
+add_child(engine)
+
+# Initialize engine (blocking)
+var ok = engine.create("res://assets/soundfont.sf2", 48000.0)
+if not ok:
+    push_error("Engine init failed")
+    return
+
+# Or initialize asynchronously
+engine.create_async("res://assets/soundfont.sf2", 48000.0)
+
+# Poll progress each frame until ready
+func _process(_delta):
+    var progress = engine.get_init_progress()
+    if progress.state == 1:  # Ready
+        # Load and play
+        var file = FileAccess.open("res://assets/song.mid", FileAccess.READ)
+        engine.load_song(file.get_buffer(file.get_length()))
+        engine.play()
+    elif progress.state == -1:  # Failed
+        push_error("Init failed")
+
+# Fill audio buffer in AudioStreamGenerator callback
+func _fill_audio_buffer(buffer: PackedFloat32Array):
+    engine.fill_buffer(buffer)
+
+# Query status
+var status = engine.get_status()
+print("Tick: ", status.current_tick, " / ", status.total_tick)
+print("Time: ", status.current_time_sec)
+print("State: ", status.state)  # 0=Stopped, 1=Playing, 2=Paused
+```
+
+#### MimiEngine Method Reference
+
+| Method                                       | Description                                              |
+| -------------------------------------------- | -------------------------------------------------------- |
+| `create(sf_path: String, sample_rate: float)`| Synchronous engine initialization. Returns `bool`.       |
+| `create_async(sf_path: String, sample_rate: float)` | Asynchronous initialization (non-blocking).        |
+| `fill_buffer(buffer: PackedFloat32Array)`    | Fills stereo interleaved f32 audio buffer.               |
+| `play()`                                     | Starts playback.                                         |
+| `pause()`                                    | Pauses playback.                                         |
+| `stop()`                                     | Stops and resets playback.                               |
+| `load_song(midi_data: PackedByteArray)`      | Loads MIDI binary data.                                  |
+| `set_key(key: int)`                          | Sets transpose (-15 to +15).                             |
+| `set_tempo(tempo: float)`                    | Sets tempo multiplier (0.2 to 5.0).                      |
+| `set_volume(volume: int)`                    | Sets master volume (0 to 100).                           |
+| `seek(tick: int)`                            | Seeks to tick position.                                  |
+| `set_rhythm(rhythm: int)`                    | Sets rhythm mode (See rhythm codes below).               |
+| `get_init_progress() -> Dictionary`          | Returns init state: `{state, progress, message}`.        |
+| `get_status() -> Dictionary`                 | Returns engine status (See status fields below).         |
+| `get_engine_info() -> Dictionary`            | Returns `{name, version, author, license}`.              |
+
+#### Rhythm Codes
+
+| Code | Style                        |
+| ---- | ---------------------------- |
+| 0    | Original (No transformation) |
+| 1    | Disco                        |
+| 2    | GoGo                         |
+| 3    | Dance                        |
+| 4    | Techno                       |
+| 5    | Hiphop                       |
+| 6    | Jitterbug                    |
+| 7    | Edm                          |
+| 8    | Edm2                         |
+
+#### Status Dictionary Fields
+
+| Key                | Type    | Description                                              |
+| ------------------ | ------- | -------------------------------------------------------- |
+| `state`            | `int`   | 0=Stopped, 1=Playing, 2=Paused                          |
+| `current_tick`     | `int`   | Current tick position                                    |
+| `total_tick`       | `int`   | Total ticks                                              |
+| `current_time_sec` | `float` | Elapsed time in seconds                                  |
+| `tempo`            | `float` | Current tempo multiplier                                 |
+| `key`              | `int`   | Current transpose offset                                 |
+| `volume`           | `int`   | Current master volume                                    |
+| `current_tempo`    | `int`   | Original MIDI file tempo (µs/beat)                       |
+| `is_bs_detected`   | `bool`  | Whether $BS (bass) track was detected                    |
+| `current_rhythm`   | `int`   | Current rhythm mode (matches rhythm codes above)         |
+
+#### Build
+
+```bash
+cargo build --release -p mimi_gd
+```
+
+The output `.dll` / `.so` / `.dylib` is placed in `target/release/`. Copy it alongside the generated `.gdextension` file into your Godot project.
 
 ***
 
@@ -262,6 +374,9 @@ mimi_engine/
 ├── mimi_ffi/           # C ABI FFI 바인딩 (게임 엔진 플러그인용)
 │   └── src/
 │       └── lib.rs          # extern "C" 함수 노출 (.dll / .so / .dylib 빌드)
+├── mimi_gd/            # Godot GDExtension 바인딩 (gdext)
+│   └── src/
+│       └── lib.rs          # Godot용 MimiEngine 노드 클래스
 ├── mimi_player/        # TUI 기반 레퍼런스 플레이어
 │   └── src/
 │       └── main.rs         # ratatui 기반 터미널 UI
@@ -276,6 +391,7 @@ mimi_engine/
 mimi_core   ←── mimi_cpal   ←── mimi_player
      ↑
 mimi_ffi
+mimi_gd
 ```
 
 `mimi_core`는 cpal에 의존하지 않으며, 오디오 출력 방식은 상위 레이어가 결정한다.
@@ -304,6 +420,12 @@ mimi_ffi
 | `ratatui`    | 터미널 UI 프레임워크 |
 | `crossterm`  | 터미널 입력 처리    |
 | `color-eyre` | 오류 리포팅       |
+
+#### mimi\_gd
+
+| 크레이트   | 용도                               |
+| ------ | -------------------------------- |
+| `godot`| Godot 엔진 Rust 바인딩 (gdext 0.5.x) |
 
 ### 핵심 API
 
@@ -446,6 +568,105 @@ cargo build --release -p mimi_ffi
 
 빌드 결과물은 `target/release/` 아래 플랫폼별 확장자로 생성된다.
 
+### mimi\_gd (Godot GDExtension)
+
+`mimi_gd`는 [gdext](https://github.com/godot-rust/gdext)로 빌드된 GDExtension 바인딩으로, MIMI 엔진을 Godot의 `MimiEngine` 노드로 노출한다.
+
+#### 기본 사용법 (GDScript)
+
+```gdscript
+# 씬에 MimiEngine 노드 추가 또는 코드로 생성
+var engine = MimiEngine.new()
+add_child(engine)
+
+# 엔진 초기화 (동기, 블로킹)
+var ok = engine.create("res://assets/soundfont.sf2", 48000.0)
+if not ok:
+    push_error("엔진 초기화 실패")
+    return
+
+# 또는 비동기 초기화
+engine.create_async("res://assets/soundfont.sf2", 48000.0)
+
+# 매 프레임 진행 상태 폴링
+func _process(_delta):
+    var progress = engine.get_init_progress()
+    if progress.state == 1:  # 완료
+        # MIDI 로드 및 재생
+        var file = FileAccess.open("res://assets/song.mid", FileAccess.READ)
+        engine.load_song(file.get_buffer(file.get_length()))
+        engine.play()
+    elif progress.state == -1:  # 실패
+        push_error("초기화 실패")
+
+# AudioStreamGenerator 콜백에서 오디오 버퍼 채우기
+func _fill_audio_buffer(buffer: PackedFloat32Array):
+    engine.fill_buffer(buffer)
+
+# 상태 조회
+var status = engine.get_status()
+print("틱: ", status.current_tick, " / ", status.total_tick)
+print("시간: ", status.current_time_sec)
+print("상태: ", status.state)  # 0=정지, 1=재생, 2=일시정지
+```
+
+#### MimiEngine 메서드 목록
+
+| 메서드                                         | 설명                                        |
+| -------------------------------------------- | ----------------------------------------- |
+| `create(sf_path: String, sample_rate: float)`| 동기 엔진 초기화. `bool` 반환                     |
+| `create_async(sf_path: String, sample_rate: float)` | 비동기 초기화 (논블로킹)                    |
+| `fill_buffer(buffer: PackedFloat32Array)`    | 스테레오 인터리브드 f32 오디오 버퍼 채움               |
+| `play()`                                     | 재생 시작                                    |
+| `pause()`                                    | 일시정지                                     |
+| `stop()`                                     | 정지 및 초기화                                 |
+| `load_song(midi_data: PackedByteArray)`      | MIDI 바이너리 데이터 로드                        |
+| `set_key(key: int)`                          | 조옮김 설정 (-15 ~ +15)                       |
+| `set_tempo(tempo: float)`                    | 템포 배율 설정 (0.2 ~ 5.0)                     |
+| `set_volume(volume: int)`                    | 마스터 볼륨 설정 (0 ~ 100)                      |
+| `seek(tick: int)`                            | 틱 위치로 이동                                 |
+| `set_rhythm(rhythm: int)`                    | 리듬 모드 설정 (아래 리듬 코드 참조)                   |
+| `get_init_progress() -> Dictionary`          | 초기화 상태 반환: `{state, progress, message}`    |
+| `get_status() -> Dictionary`                 | 엔진 상태 반환 (아래 상태 필드 참조)                   |
+| `get_engine_info() -> Dictionary`            | `{name, version, author, license}` 반환    |
+
+#### 리듬 모드 상수
+
+| 값 | 리듬            |
+| - | ------------- |
+| 0 | Original (원곡) |
+| 1 | Disco         |
+| 2 | GoGo          |
+| 3 | Dance         |
+| 4 | Techno        |
+| 5 | Hiphop        |
+| 6 | Jitterbug     |
+| 7 | Edm (EDM)     |
+| 8 | Edm2          |
+
+#### 상태 Dictionary 필드
+
+| 키                 | 타입      | 설명                                        |
+| ----------------- | ------- | ----------------------------------------- |
+| `state`           | `int`   | 0=정지, 1=재생, 2=일시정지                        |
+| `current_tick`    | `int`   | 현재 틱 위치                                   |
+| `total_tick`      | `int`   | 전체 틱 수                                    |
+| `current_time_sec`| `float` | 경과 시간 (초)                                  |
+| `tempo`           | `float` | 현재 템포 배율                                  |
+| `key`             | `int`   | 현재 조옮김 오프셋                                |
+| `volume`          | `int`   | 현재 마스터 볼륨                                 |
+| `current_tempo`   | `int`   | MIDI 파일 원본 템포 (µs/beat)                    |
+| `is_bs_detected`  | `bool`  | $BS(베이스) 트랙 검출 여부                          |
+| `current_rhythm`  | `int`   | 현재 리듬 모드 (위 리듬 코드와 동일)                    |
+
+#### mimi\_gd 빌드
+
+```bash
+cargo build --release -p mimi_gd
+```
+
+빌드 결과물(`.dll` / `.so` / `.dylib`)은 `target/release/`에 생성된다. 생성된 `.gdextension` 파일과 함께 Godot 프로젝트에 복사하여 사용한다.
+
 ***
 
 ### `MimiCommand`
@@ -523,6 +744,9 @@ cargo run -p mimi_player --release
 
 # 게임 엔진용 FFI 라이브러리 빌드
 cargo build --release -p mimi_ffi
+
+# Godot GDExtension 라이브러리 빌드
+cargo build --release -p mimi_gd
 ```
 
 `assets/` 디렉토리에 `.mid` 파일과 `soundfont.sf2`를 배치한 후 플레이어를 실행한다.

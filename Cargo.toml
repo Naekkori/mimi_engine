@@ -2,7 +2,7 @@
 members = [
     "mimi_core",
     "mimi_cpal",
-    "mimi_ffi",
+    "mimi_ffi", "mimi_gd",
     "mimi_player"
 ]
 resolver = "2"
