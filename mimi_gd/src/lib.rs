@@ -326,15 +326,11 @@ impl MimiEngine {
     #[func]
     fn get_engine_info(&self) -> Dictionary<Variant, Variant> {
         let mut dict = Dictionary::new();
-        let Some(inner) = self.inner.as_ref() else { return dict };
-        let Ok(guard) = inner.lock() else { return dict };
-        if matches!(guard.init_state, MimiInitState::Ready { .. }) {
-            let info = mimi_core::get_engine_info();
-            dict.set("name", &Variant::from(info.name.as_str()));
-            dict.set("version", &Variant::from(info.version.as_str()));
-            dict.set("author", &Variant::from(info.author.as_str()));
-            dict.set("license", &Variant::from(info.license.as_str()));
-        }
+        let info = mimi_core::get_engine_info();
+        dict.set("name", &Variant::from(info.name.as_str()));
+        dict.set("version", &Variant::from(info.version.as_str()));
+        dict.set("author", &Variant::from(info.author.as_str()));
+        dict.set("license", &Variant::from(info.license.as_str()));
         dict
     }
 }
