@@ -255,7 +255,7 @@ impl MimiEngine {
     // 반환값: Dictionary { state: i32, progress: f32, message: String }
     //   state: 0=초기화 중, 1=완료, -1=실패
     #[func]
-    fn get_init_progress(&self) -> Dictionary<StringName, Variant> {
+    fn get_init_progress(&self) -> Dictionary {
         let mut dict = Dictionary::new();
         let Some(inner) = self.inner.as_ref() else {
             dict.set("state", &Variant::from(-1i64));
@@ -284,7 +284,7 @@ impl MimiEngine {
     // 반환값: Dictionary { state, current_tick, total_tick, current_time_sec, tempo, key, volume, current_tempo, is_bs_detected, current_rhythm }
     //   state: 0=Stopped, 1=Playing, 2=Paused
     #[func]
-    fn get_status(&self) -> Dictionary<StringName, Variant> {
+    fn get_status(&self) -> Dictionary {
         let mut dict = Dictionary::new();
         let Some(inner) = self.inner.as_ref() else { return dict };
         let Ok(guard) = inner.lock() else { return dict };
@@ -324,7 +324,7 @@ impl MimiEngine {
     // 엔진 정보 조회
     // 반환값: Dictionary { name, version, author, license }
     #[func]
-    fn get_engine_info(&self) -> Dictionary<StringName, Variant> {
+    fn get_engine_info(&self) -> Dictionary {
         let mut dict = Dictionary::new();
         let Some(inner) = self.inner.as_ref() else { return dict };
         let Ok(guard) = inner.lock() else { return dict };
