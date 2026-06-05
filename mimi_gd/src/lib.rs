@@ -131,15 +131,15 @@ impl MimiEngine {
     // buffer: L/R 인터리브드 f32 배열 (길이 = 프레임 수 * 2)
     // 초기화 미완료 시 무음(silence)을 채움
     #[func]
-    fn fill_buffer(&self, mut buffer: PackedFloat32Array) {
+    fn fill_buffer(&self, mut buffer: PackedFloat32Array) -> PackedFloat32Array {
         let Some(inner) = self.inner.as_ref() else {
             buffer.fill(0.0);
-            return;
+            return buffer;
         };
 
         let Ok(mut guard) = inner.lock() else {
             buffer.fill(0.0);
-            return;
+            return buffer;
         };
 
         if let MimiInitState::Ready { context, .. } = &mut guard.init_state {
@@ -147,6 +147,7 @@ impl MimiEngine {
         } else {
             buffer.fill(0.0);
         }
+        buffer
     }
 
     // 재생 시작
