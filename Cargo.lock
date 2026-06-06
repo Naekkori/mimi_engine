@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "mimi_core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "mimi_cpal"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "cpal",
  "mimi_core",
@@ -1094,14 +1094,14 @@ dependencies = [
 
 [[package]]
 name = "mimi_ffi"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "mimi_core",
 ]
 
 [[package]]
 name = "mimi_gd"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "godot",
  "mimi_core",
@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "mimi_player"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "color-eyre",

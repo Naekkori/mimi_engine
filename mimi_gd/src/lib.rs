@@ -317,6 +317,7 @@ impl MimiEngine {
                 dict.set("current_tempo", &Variant::from(status.current_tempo as i64));
                 dict.set("is_bs_detected", &Variant::from(status.is_bs_detected));
                 dict.set("current_rhythm", &Variant::from(rhythm_int));
+                dict.set("ppq", &Variant::from(status.ppq as i64));
             }
         }
         dict

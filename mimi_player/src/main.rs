@@ -82,6 +82,7 @@ impl App {
                 is_bs_detected: false,
                 current_tempo: 500_000,
                 song_key_sig: None,
+                ppq: 480,
             },
             file_list: Vec::new(),
             selected_index: 0,
@@ -457,7 +458,8 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
                     || app.engine_status.key != status.key
                     || app.engine_status.volume != status.volume
                     || app.engine_status.is_bs_detected != status.is_bs_detected
-                    || app.engine_status.song_key_sig != status.song_key_sig;
+                    || app.engine_status.song_key_sig != status.song_key_sig
+                    || app.engine_status.ppq != status.ppq;
                 app.engine_status = status;
                 if changed {
                     needs_redraw = true;

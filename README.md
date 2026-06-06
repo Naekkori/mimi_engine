@@ -109,7 +109,7 @@ Invoked inside a game engine or audio backend callback. Populates a stereo inter
 | Method / Field              | Description                                                                                     |
 | --------------------------- | ----------------------------------------------------------------------------------------------- |
 | `send_command(MimiCommand)` | Sends Play, Pause, Stop, SetKey, SetTempo, SetVolume, Seek, LoadSong commands.                  |
-| `get_status()`              | Retrieves status, current tick, elapsed time, tempo scale, transpose offset, and master volume. |
+| `get_status()`              | Retrieves status, current tick, elapsed time, tempo scale, transpose offset, master volume, and PPQ. |
 | `get_state()`               | Returns the current PlayerState.                                                                |
 | `ui_rx`                     | Channel receiver for UI events (Lyrics, channel volume levels, tick ticks).                     |
 
@@ -210,6 +210,7 @@ typedef struct {
     int   current_tempo;    // µs/beat
     int   is_bs_detected;   // 0 or 1
     int   current_rhythm;   // Matching rhythm codes
+    unsigned int ppq;       // Ticks Per Quarter Note
 } MimiFfiStatus;
 ```
 
@@ -330,6 +331,7 @@ print("State: ", status.state)  # 0=Stopped, 1=Playing, 2=Paused
 | `current_tempo`    | `int`   | Original MIDI file tempo (µs/beat)                       |
 | `is_bs_detected`   | `bool`  | Whether $BS (bass) track was detected                    |
 | `current_rhythm`   | `int`   | Current rhythm mode (matches rhythm codes above)         |
+| `ppq`              | `int`   | Ticks Per Quarter Note (PPQ)                             |
 
 #### Build
 
@@ -444,7 +446,7 @@ mimi_gd
 | 메서드 / 필드                    | 설명                                                                   |
 | --------------------------- | -------------------------------------------------------------------- |
 | `send_command(MimiCommand)` | Play, Pause, Stop, SetKey, SetTempo, SetVolume, Seek, LoadSong 명령 전송 |
-| `get_status()`              | 현재 상태, 틱 위치, 경과 시간, 템포 배율, 키 오프셋, 볼륨 상태 조회                           |
+| `get_status()`              | 현재 상태, 틱 위치, 경과 시간, 템포 배율, 키 오프셋, 볼륨 상태, PPQ 조회                           |
 | `get_state()`               | 현재 PlayerState 반환                                                    |
 | `ui_rx`                     | 가사, 채널 레벨, 틱 업데이트 등 UI 이벤트 수신 채널                                     |
 
@@ -545,6 +547,7 @@ typedef struct {
     int   current_tempo;    // µs/beat
     int   is_bs_detected;   // 0 또는 1
     int   current_rhythm;   // 위 리듬 모드 상수와 동일
+    unsigned int ppq;       // Ticks Per Quarter Note (PPQ)
 } MimiFfiStatus;
 ```
 
@@ -658,6 +661,7 @@ print("상태: ", status.state)  # 0=정지, 1=재생, 2=일시정지
 | `current_tempo`   | `int`   | MIDI 파일 원본 템포 (µs/beat)                    |
 | `is_bs_detected`  | `bool`  | $BS(베이스) 트랙 검출 여부                          |
 | `current_rhythm`  | `int`   | 현재 리듬 모드 (위 리듬 코드와 동일)                    |
+| `ppq`             | `int`   | 미디파일의 PPQ (Ticks Per Quarter Note)       |
 
 #### mimi\_gd 빌드
 
@@ -732,6 +736,7 @@ FluidsynthWarning { message }                        // Fluidsynth/Fluidlite 경
 | `current_tempo`  | `i32`                | MIDI 파일 원본 템포 (µs/beat)                         |
 | `is_bs_detected` | `bool`               | $BS(베이스) 트랙 검출 여부                               |
 | `song_key_sig`   | `Option<(i8, bool)>` | MIDI 파일에 정의된 원곡 키 시그니처 (샤프/플랫 수, 단조 여부)         |
+| `ppq`            | `u32`                | 미디파일의 PPQ                                      |
 
 ## 빌드 및 실행
 

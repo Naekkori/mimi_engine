@@ -61,6 +61,8 @@ pub struct MimiFfiStatus {
     pub is_bs_detected: c_int,
     // 현재 리듬 모드 (0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug, 7=Edm)
     pub current_rhythm: c_int,
+    // 미디파일의 PPQ (Ticks Per Quarter Note)
+    pub ppq: c_uint,
 }
 
 /// 엔진 핸들 생성 (동기, 블로킹)
@@ -377,6 +379,7 @@ pub extern "C" fn mimi_ffi_get_status(
                     (*out).current_tempo   = status.current_tempo;
                     (*out).is_bs_detected  = if status.is_bs_detected { 1 } else { 0 };
                     (*out).current_rhythm  = rhythm_int;
+                    (*out).ppq             = status.ppq as c_uint;
                 }
                 1
             }

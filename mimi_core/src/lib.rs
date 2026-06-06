@@ -60,6 +60,8 @@ pub struct MimiEngineStatus {
     pub current_tempo: i32,
     // 미디파일에 정의된 원곡 키 시그니처 (샤프/플랫 수, 단조 여부)
     pub song_key_sig: Option<(i8, bool)>,
+    // 미디파일의 PPQ (Ticks Per Quarter Note)
+    pub ppq: u32,
 }
 
 /// 외부 제어용 인터페이스 핸들
@@ -474,6 +476,7 @@ impl AudioPlaybackContext {
                         status.is_bs_detected = bs_detected;
                         // 새 곡 로드 시 이전 곡의 키 시그니처 초기화
                         status.song_key_sig = None;
+                        status.ppq = self.sequencer.ppq as u32;
                     }
                     
                     // 신규 곡의 음량 게인 강제 재조정
@@ -1202,6 +1205,7 @@ pub fn create_mimi_engine(
         is_bs_detected: false,
         current_tempo: 500_000,
         song_key_sig: None,
+        ppq: 480,
     }));
     let status_clone = Arc::clone(&player_status);
 
