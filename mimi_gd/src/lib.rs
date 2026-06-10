@@ -12,8 +12,7 @@ use godot::builtin::{Dictionary, PackedFloat32Array, StringName, Variant};
 use godot::classes::Node;
 use godot::prelude::*;
 use mimi_core::{
-    create_mimi_engine, AudioPlaybackContext, MimiCommand, MimiEngineHandle,
-    PlayerState, Rhythm,
+    create_mimi_engine, AudioPlaybackContext, MimiCommand, MimiEngineHandle, PlayerState, Rhythm,
 };
 use std::sync::{Arc, Mutex};
 
@@ -50,10 +49,7 @@ pub struct MimiEngine {
 #[godot_api]
 impl INode for MimiEngine {
     fn init(base: Base<Node>) -> Self {
-        Self {
-            base,
-            inner: None,
-        }
+        Self { base, inner: None }
     }
 }
 
@@ -153,7 +149,9 @@ impl MimiEngine {
     // 재생 시작
     #[func]
     fn play(&self) {
-        let Some(inner) = self.inner.as_ref() else { return };
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
         let Ok(guard) = inner.lock() else { return };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             let _ = handle.send_command(MimiCommand::Play);
@@ -163,7 +161,9 @@ impl MimiEngine {
     // 일시정지
     #[func]
     fn pause(&self) {
-        let Some(inner) = self.inner.as_ref() else { return };
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
         let Ok(guard) = inner.lock() else { return };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             let _ = handle.send_command(MimiCommand::Pause);
@@ -173,7 +173,9 @@ impl MimiEngine {
     // 정지 및 초기화
     #[func]
     fn stop(&self) {
-        let Some(inner) = self.inner.as_ref() else { return };
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
         let Ok(guard) = inner.lock() else { return };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             let _ = handle.send_command(MimiCommand::Stop);
@@ -184,7 +186,9 @@ impl MimiEngine {
     // midi_data: MIDI 바이너리 데이터
     #[func]
     fn load_song(&self, midi_data: PackedByteArray) {
-        let Some(inner) = self.inner.as_ref() else { return };
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
         let Ok(guard) = inner.lock() else { return };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             let _ = handle.send_command(MimiCommand::LoadSong(midi_data.to_vec()));
@@ -194,7 +198,9 @@ impl MimiEngine {
     // 조옮김 설정 (-15 ~ +15 반음)
     #[func]
     fn set_key(&self, key: i32) {
-        let Some(inner) = self.inner.as_ref() else { return };
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
         let Ok(guard) = inner.lock() else { return };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             let _ = handle.send_command(MimiCommand::SetKey(key.clamp(-15, 15) as i8));
@@ -204,7 +210,9 @@ impl MimiEngine {
     // 템포 배율 설정 (0.2 ~ 5.0)
     #[func]
     fn set_tempo(&self, tempo: f32) {
-        let Some(inner) = self.inner.as_ref() else { return };
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
         let Ok(guard) = inner.lock() else { return };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             let _ = handle.send_command(MimiCommand::SetTempo(tempo));
@@ -214,7 +222,9 @@ impl MimiEngine {
     // 마스터 볼륨 설정 (0 ~ 100)
     #[func]
     fn set_volume(&self, volume: u8) {
-        let Some(inner) = self.inner.as_ref() else { return };
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
         let Ok(guard) = inner.lock() else { return };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             let _ = handle.send_command(MimiCommand::SetVolume(volume));
@@ -224,7 +234,9 @@ impl MimiEngine {
     // 특정 틱 위치로 이동 (Seek)
     #[func]
     fn seek(&self, tick: u32) {
-        let Some(inner) = self.inner.as_ref() else { return };
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
         let Ok(guard) = inner.lock() else { return };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             let _ = handle.send_command(MimiCommand::Seek(tick));
@@ -235,7 +247,9 @@ impl MimiEngine {
     // rhythm: 0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug, 7=Edm
     #[func]
     fn set_rhythm(&self, rhythm: i32) {
-        let Some(inner) = self.inner.as_ref() else { return };
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
         let Ok(guard) = inner.lock() else { return };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             let r = match rhythm {
@@ -246,6 +260,7 @@ impl MimiEngine {
                 5 => Rhythm::Hiphop,
                 6 => Rhythm::Jitterbug,
                 7 => Rhythm::Edm,
+                8 => Rhythm::Edm2,
                 _ => Rhythm::Original,
             };
             let _ = handle.send_command(MimiCommand::SetRhythm(r));
@@ -287,7 +302,9 @@ impl MimiEngine {
     #[func]
     fn get_status(&self) -> Dictionary<Variant, Variant> {
         let mut dict = Dictionary::new();
-        let Some(inner) = self.inner.as_ref() else { return dict };
+        let Some(inner) = self.inner.as_ref() else {
+            return dict;
+        };
         let Ok(guard) = inner.lock() else { return dict };
         if let MimiInitState::Ready { handle, .. } = &guard.init_state {
             if let Ok(status) = handle.get_status() {
@@ -310,7 +327,10 @@ impl MimiEngine {
                 dict.set("state", &Variant::from(state_int));
                 dict.set("current_tick", &Variant::from(status.current_tick as i64));
                 dict.set("total_tick", &Variant::from(status.total_tick as i64));
-                dict.set("current_time_sec", &Variant::from(status.current_time.as_secs_f64()));
+                dict.set(
+                    "current_time_sec",
+                    &Variant::from(status.current_time.as_secs_f64()),
+                );
                 dict.set("tempo", &Variant::from(status.tempo as f64));
                 dict.set("key", &Variant::from(status.key as i64));
                 dict.set("volume", &Variant::from(status.volume as i64));
