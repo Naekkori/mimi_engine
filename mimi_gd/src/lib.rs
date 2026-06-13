@@ -12,7 +12,7 @@ use godot::builtin::{Dictionary, PackedFloat32Array, StringName, Variant};
 use godot::classes::Node;
 use godot::prelude::*;
 use mimi_core::{
-    create_mimi_engine, AudioPlaybackContext, MimiCommand, MimiEngineHandle, PlayerState, Rhythm,
+    AudioPlaybackContext, MimiCommand, MimiEngineHandle, PlayerState, Rhythm, create_mimi_engine,
 };
 use std::sync::{Arc, Mutex};
 
