@@ -614,7 +614,7 @@ impl RhythmEngine {
             tracks: edm_tracks,
         });
 
-        // 8. EDM2 패턴 (EDM 리듬변환 패턴 - 패턴 A+B 결합)
+// 8. EDM2 패턴 (EDM 리듬변환 패턴 - 패턴 A+B 결합)
         let mut edm2_tracks = Vec::new();
         let mut edm2_drum_notes = Vec::new();
 
@@ -646,13 +646,18 @@ impl RhythmEngine {
             edm2_drum_notes.push(MidiNote { tick, note_number: 39, velocity: 100, channel: 9 });
             edm2_drum_notes.push(MidiNote { tick: tick + 100, note_number: 39, velocity: 0, channel: 9 });
         }
-        // 탬버린 
-        let mut tambourin_tick = 240;
-        while tambourin_tick < 3840 {
-            edm2_drum_notes.push(MidiNote { tick: tambourin_tick, note_number: 54, velocity: 100, channel: 9 });
-            edm2_drum_notes.push(MidiNote { tick: tambourin_tick + 100, note_number: 54, velocity: 0, channel: 9 });
-            tambourin_tick += 240;
+
+        // 탬버린 패턴
+        let mut beat_tick = 0;
+        while beat_tick < 3840 {
+            let t1 = beat_tick + 240;
+            if t1 < 3840 {
+                edm2_drum_notes.push(MidiNote { tick: t1, note_number: 54, velocity: 85, channel: 9 });
+                edm2_drum_notes.push(MidiNote { tick: t1 + 100, note_number: 54, velocity: 0, channel: 9 });
+            }
+            beat_tick += 480;
         }
+
         edm2_tracks.push(RhythmTrack {
             track_type: TrackType::Drum,
             instrument_program: 25, // TR-808 Analog Kit
