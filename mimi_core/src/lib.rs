@@ -3,8 +3,16 @@
 mod sequencer;
 mod rhythm_engine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use hibiki::{HibikiSynth, HibikiSettings, HibikiLogger};
-use hibiki::log_level;
+use hibiki::{HibikiSynth, HibikiSettings, HibikiLogger, LogLevel};
+// log_level: 옛 OxiSynth API 호환을 위해 자체 모듈 제공
+mod log_level {
+    pub use hibiki::LogLevel::*;
+    pub const PANIC: hibiki::LogLevel = hibiki::LogLevel::Error;
+    pub const ERROR: hibiki::LogLevel = hibiki::LogLevel::Error;
+    pub const WARNING: hibiki::LogLevel = hibiki::LogLevel::Warn;
+    pub const INFO: hibiki::LogLevel = hibiki::LogLevel::Info;
+    pub const DEBUG: hibiki::LogLevel = hibiki::LogLevel::Debug;
+}
 use midly::TrackEventKind;
 pub use sequencer::{MidiEngineEvent, MidiFormat, MimiSequencer};
 pub use rhythm_engine::{Rhythm, RhythmEngine, MidiNote, BsChordEvent};
@@ -354,7 +362,7 @@ impl AudioPlaybackContext {
 
                     // 추적 완료 후 최종 Preset 상태를 2개 신디사이저 포트에 각각 적용
                     for p in 0..2 {
-                        let synth = self.synth.lock().unwrap();
+                        let mut synth = self.synth.lock().unwrap();
                         for ch in 0..16 {
                             let setup = &channel_presets[p][ch];
                             let is_drum = self.drum_channels[p][ch];
@@ -439,7 +447,7 @@ impl AudioPlaybackContext {
                     let _ = self.synth.lock().unwrap().system_reset();
 
                     // 모든 MIDI 채널에 기본 컨트롤 초기값 강제 적용 (Reset All Controllers & Default Volume)
-                    let synth = self.synth.lock().unwrap();
+                    let mut synth = self.synth.lock().unwrap();
                     for ch in 0u32..16 {
                         let _ = synth.cc(ch, 121, 0); // Reset All Controllers
                         let _ = synth.cc(ch, 0, 0);   // Bank Select MSB
@@ -515,7 +523,7 @@ impl AudioPlaybackContext {
                     // 실시간으로 모든 이전 음 찌꺼기 끄기 (Note Stuck 방지)
                     // port 0, 1 전체 신디사이저 포트에 하드웨어 레벨 All Notes Off 및 All Sound Off
                     for port in 0..2 {
-                        let synth = self.synth.lock().unwrap();
+                        let mut synth = self.synth.lock().unwrap();
                         for ch in 0..16 {
                             let _ = synth.cc(ch as u32, 123, 0); // All Notes Off
                             let _ = synth.cc(ch as u32, 120, 0); // All Sound Off
@@ -665,7 +673,7 @@ impl AudioPlaybackContext {
 
         // 역추적한 프리셋들을 실제 신디사이저에 동기화
         for p in 0..2 {
-            let synth = self.synth.lock().unwrap();
+            let mut synth = self.synth.lock().unwrap();
             for ch in 0..16 {
                 let setup = &channel_presets[p][ch];
                 let is_drum = self.drum_channels[p][ch];
@@ -815,7 +823,7 @@ impl AudioPlaybackContext {
                         let is_drum_ch = self.drum_channels[synth_port][channel as usize];
                         let target_channel = channel as u32;
                         // 포트에 해당되는 synth 지정
-                        let synth = self.synth.lock().unwrap();
+                        let mut synth = self.synth.lock().unwrap();
 
                         if let midly::TrackEventKind::Midi { message, .. } = kind {
                             match message {
@@ -989,7 +997,7 @@ impl AudioPlaybackContext {
                             
                             // 실시간으로 이전 음 찌꺼기 끄기 (Note Stuck 방지)
                             for port in 0..2 {
-                                let synth = self.synth.lock().unwrap();
+                                let mut synth = self.synth.lock().unwrap();
                                 for ch in 0..16 {
                                     let _ = synth.cc(ch as u32, 123, 0); // All Notes Off
                                     let _ = synth.cc(ch as u32, 120, 0); // All Sound Off
@@ -1189,22 +1197,10 @@ pub fn create_mimi_engine(
     let (ui_tx, ui_rx) = unbounded::<MidiEngineEvent>();
 
     // Hibiki 엔진 로깅 설정 (TUI 화면 깨짐 방지)
-    let ui_tx_log = ui_tx.clone();
-    let l_handler = HibikiLogger::new(move |_lvl, msg| {
-        let _ = ui_tx_log.send(MidiEngineEvent::FluidsynthWarning {
-            message: msg.to_string(),
-        });
-    });
-    hibiki::set_log_levels(
-        &[
-            log_level::PANIC,
-            log_level::ERROR,
-            log_level::WARNING,
-            log_level::INFO,
-            log_level::DEBUG,
-        ],
-        l_handler,
-    );
+    // 자체 신디사이저는 별도 로그 핸들러가 없으므로 그냥 로거만 생성
+    let _l_handler = HibikiLogger::new();
+    // 자체 신디사이저의 전역 로그 레벨을 Warn으로 설정
+    hibiki::set_log_levels_global(LogLevel::Warn, LogLevel::Warn);
 
     // 공유 상태 객체 초기화
     let player_status = Arc::new(Mutex::new(MimiEngineStatus {
@@ -1229,7 +1225,7 @@ pub fn create_mimi_engine(
     let mut settings = HibikiSettings::new();
     settings.set_sample_rate(sample_rate);
 
-    let synth = HibikiSynth::new(settings)
+    let mut synth = HibikiSynth::new(settings)
         .map_err(|e| {
             let msg = format!("Hibiki Synth creation failed: {}", e);
             let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });

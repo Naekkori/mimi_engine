@@ -1,7 +1,38 @@
 // integration_test.rs - mimi_core 연결 검증 테스트
 // mimi_core가 사용하는 모든 API 패턴을 시뮬레이션
+// 출력을 WAV 파일로 저장해서 들을 수 있게
 
 use hibiki::{HibikiSettings, HibikiSynth};
+use std::io::Write;
+
+/// 16-bit PCM mono WAV 파일 저장
+fn save_wav(path: &str, samples: &[i16], sample_rate: u32) {
+    let mut file = std::fs::File::create(path).expect("create wav");
+    let data_len = (samples.len() * 2) as u32;
+    let file_len = data_len + 36;
+
+    // RIFF 헤더
+    file.write_all(b"RIFF").ok();
+    file.write_all(&file_len.to_le_bytes()).ok();
+    file.write_all(b"WAVE").ok();
+
+    // fmt 청크
+    file.write_all(b"fmt ").ok();
+    file.write_all(&16u32.to_le_bytes()).ok();
+    file.write_all(&1u16.to_le_bytes()).ok(); // PCM
+    file.write_all(&1u16.to_le_bytes()).ok(); // mono
+    file.write_all(&sample_rate.to_le_bytes()).ok();
+    file.write_all(&(sample_rate * 2u32).to_le_bytes()).ok(); // byte rate
+    file.write_all(&2u16.to_le_bytes()).ok(); // block align
+    file.write_all(&16u16.to_le_bytes()).ok(); // bits per sample
+
+    // data 청크
+    file.write_all(b"data").ok();
+    file.write_all(&data_len.to_le_bytes()).ok();
+    for s in samples {
+        file.write_all(&s.to_le_bytes()).ok();
+    }
+}
 
 fn main() {
     println!("=== Hibiki 사운드폰트 엔진 통합 테스트 ===\n");
@@ -10,8 +41,10 @@ fn main() {
     let mut settings = HibikiSettings::new();
     settings.set_sample_rate(44100.0);
 
-    let synth = HibikiSynth::new(settings).expect("Failed to create synth");
-    println!("[1] HibikiSynth 생성 완료");
+    let mut synth = HibikiSynth::new(settings).expect("Failed to create synth");
+    // 마스터 게인을 낮춰서 누적 방지
+    synth.set_gain(0.4);
+    println!("[1] HibikiSynth 생성 완료 (gain=0.4)");
 
     // 2. 사운드폰트 로드 (mimi_core의 sfload 패턴)
     let sf_path = "d:/source/mimi_engine/assets/soundfont.SF2";
@@ -49,7 +82,6 @@ fn main() {
         let _ = synth.cc(ch, 121, 0); // Reset All Controllers
         let _ = synth.cc(ch, 0, 0);   // Bank Select MSB
         let _ = synth.cc(ch, 32, 0);  // Bank Select LSB
-        let _ = synth.program_change(ch, 0); // Default Grand Piano
         let _ = synth.cc(ch, 7, 100);  // Volume
         let _ = synth.cc(ch, 11, 127); // Expression
         let _ = synth.cc(ch, 10, 64);  // Pan
@@ -58,28 +90,42 @@ fn main() {
         let _ = synth.cc(ch, 93, 0);   // Chorus
         let _ = synth.cc(ch, 94, 0);   // Effect 4
     }
-    println!("[3] 16채널 초기화 완료 (모든 CC + Program Change)");
 
-    // 4. 미디 이벤트 시뮬레이션 - C 메이저 스케일
-    println!("\n[4] C 메이저 스케일 재생 테스트");
-    let notes = [60, 62, 64, 65, 67, 69, 71, 72]; // C4 ~ C5
-    for &note in &notes {
-        // Note On
-        if let Err(e) = synth.note_on(0, note, 127) {
+    // 채널 0: 다양한 program 테스트
+    // Program 5 (Electric Piano 1) - 더 명확한 음
+    let _ = synth.program_change(0, 4);  // Electric Piano 1
+    let _ = synth.program_change(1, 0);  // Acoustic Grand
+    let _ = synth.program_change(2, 24); // Nylon Guitar
+    let _ = synth.program_change(9, 0);  // Channel 9 (drum)
+    println!("[3] 16채널 초기화 완료 + 다양한 program 설정 (5/0/24/0)");
+
+    // 4. 미디 이벤트 시뮬레이션 - 다양한 velocity로 진짜 음 찾기
+    println!("\n[4] 다양한 velocity로 진짜 음 찾기 (WAV 저장)");
+    let mut all_samples: Vec<i16> = Vec::new();
+
+    // Acoustic Grand (program 0) 다양한 velocity 테스트
+    let _ = synth.program_change(0, 0);
+    let test_notes = [60, 64, 67, 72]; // C4, E4, G4, C5
+    let test_velocities = [30, 60, 100, 127];
+
+    for (i, &note) in test_notes.iter().enumerate() {
+        let vel = test_velocities[i % 4];
+        if let Err(e) = synth.note_on(0, note, vel) {
             eprintln!("    NoteOn({}) 실패: {}", note, e);
         }
 
-        // 0.2초 렌더링 (8820 샘플)
+        // 0.5초 렌더링
         let mut peak_l = 0.0f32;
         let mut peak_r = 0.0f32;
         let mut non_zero_count = 0;
 
-        for _ in 0..8820 {
+        for _ in 0..22050 {
             let mut out = [0.0f32; 2];
             if let Err(e) = synth.write_samples(&mut out) {
                 eprintln!("    write_samples 실패: {}", e);
                 return;
             }
+            all_samples.push((out[0].clamp(-1.0, 1.0) * 32767.0) as i16);
             peak_l = peak_l.max(out[0].abs());
             peak_r = peak_r.max(out[1].abs());
             if out[0].abs() > 0.001 || out[1].abs() > 0.001 {
@@ -87,22 +133,26 @@ fn main() {
             }
         }
 
-        // Note Off
-        if let Err(e) = synth.note_off(0, note) {
-            eprintln!("    NoteOff({}) 실패: {}", note, e);
+        let _ = synth.note_off(0, note);
+
+        // 0.3초 release
+        for _ in 0..13230 {
+            let mut out = [0.0f32; 2];
+            let _ = synth.write_samples(&mut out);
+            all_samples.push((out[0].clamp(-1.0, 1.0) * 32767.0) as i16);
         }
 
         println!(
-            "    Note {}: peak(L,R) = ({:.4}, {:.4}), non-zero samples = {}",
-            note, peak_l, peak_r, non_zero_count
+            "    [prog=0] Note {} vel={}: peak(L,R) = ({:.4}, {:.4}), non-zero samples = {}",
+            note, vel, peak_l, peak_r, non_zero_count
         );
-
-        // 다음 노트 전에 짧은 휴식
-        for _ in 0..2205 {
-            let mut out = [0.0f32; 2];
-            let _ = synth.write_samples(&mut out);
-        }
     }
+
+    // WAV 파일로 저장
+    let wav_path = "d:/source/mimi_engine/hibiki_output.wav";
+    save_wav(wav_path, &all_samples, 44100);
+    println!("    [WAV 저장] {} ({} samples, {:.1}초)",
+        wav_path, all_samples.len(), all_samples.len() as f32 / 44100.0);
 
     // 5. 확장 CC 테스트 (GS/XG)
     println!("\n[5] 확장 CC 테스트");

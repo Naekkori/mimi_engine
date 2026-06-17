@@ -65,6 +65,10 @@ pub struct Voice {
     last_output: f32,
     /// 보이스가 릴리즈된 후 경과 샘플 수 (fade-out용)
     release_counter: u32,
+    /// 보이스가 속한 MIDI 채널 (피치벤드/CC 적용 추적용)
+    pub channel: u8,
+    /// 보이스가 트리거된 노트 번호
+    pub note: u8,
 }
 
 impl Voice {
@@ -92,6 +96,8 @@ impl Voice {
             first_sample: 0.0,
             last_output: 0.0,
             release_counter: 0,
+            channel: 0,
+            note: 0,
         }
     }
 
@@ -108,7 +114,10 @@ impl Voice {
         sustain: f32,
         release: f32,
         attenuation: f32,
+        channel: u8,
     ) {
+        self.channel = channel;
+        self.note = note;
         // 첫 샘플 값 미리 계산 (팝 노이즈 방지용)
         let first_sample_val = if smpl_data.is_empty() {
             0.0
@@ -116,18 +125,46 @@ impl Voice {
             smpl_data[sample.start as usize] as f32 / 32768.0
         };
 
-        self.sample_data = Some(smpl_data);
-        self.start_offset = sample.start;
-        self.sample_len = sample.end.saturating_sub(sample.start);
+        self.sample_data = Some(smpl_data.clone());
+
+        // Leading silence skip: SF2 spec - sample 시작 부분에 0값이 최소 46개 있을 수 있음
+        // 이게 pop noise의 원인. 0이 아닌 값이 처음 나오는 위치를 찾는다.
+        let sample_start = sample.start as usize;
+        let sample_end = (sample.end as usize).min(smpl_data.len());
+        let mut real_start = sample_start;
+        for i in sample_start..(sample_start + 200).min(sample_end) {
+            if smpl_data[i].abs() > 100 {  // 0이 아닌 의미있는 값
+                real_start = i;
+                break;
+            }
+        }
+        self.start_offset = real_start as u32;
+        self.sample_len = (sample_end as u32).saturating_sub(self.start_offset);
+
+        // sample이 너무 짧으면 (200 sample 미만 = 4.5ms 미만) 진짜 음이 아님. trigger 거부
+        if self.sample_len < 200 {
+            // sample을 off 상태로 둠 (no sound)
+            self.state = VoiceState::Off;
+            return;
+        }
+        // leading silence skip으로 sample이 너무 짧아진 경우도 거부
+        if self.sample_len < 1000 {
+            self.state = VoiceState::Off;
+            return;
+        }
         // 루프 포인트는 샘플 내에서의 상대 위치
-        self.loop_start = sample.start_loop.saturating_sub(sample.start);
-        self.loop_end = sample.end_loop.saturating_sub(sample.start);
-        // 루프가 있으면 Continuous, 없으면 NoLoop
-        // SF2 spec: loop mode 1 = Continuous (until release)
-        if self.loop_end > self.loop_start && self.loop_end <= self.sample_len {
-            self.loop_mode = 1; // Continuous loop
+        self.loop_start = sample.start_loop.saturating_sub(self.start_offset);
+        self.loop_end = sample.end_loop.saturating_sub(self.start_offset);
+        // 루프: SF2 spec - 53번 generator (SampleModes)로 결정
+        // 0=NoLoop, 1=Continuous, 2=UntilRelease, 3=OneShot
+        // 우리는 진짜 음을 위해 Continuous만 지원. 짧은 sample은 loop 안 함
+        if self.loop_end > self.loop_start
+            && self.loop_end <= self.sample_len
+            && (self.loop_end - self.loop_start) > 1000  // loop 구간이 1000 샘플 이상
+        {
+            self.loop_mode = 1; // Continuous loop (긴 sample만)
         } else {
-            self.loop_mode = 0; // No loop
+            self.loop_mode = 0; // No loop (짧은 sample은 반복 안 함)
         }
         self.sample_rate = sample_rate;
 
@@ -155,15 +192,16 @@ impl Voice {
         self.volume = (velocity as f32 / 127.0).clamp(0.0, 1.0);
 
         // ADSR 초기화 (SF2 envelope generator 값 적용)
-        // - attack, decay, release: seconds (timecents 변환됨)
-        // - sustain: 0.0~1.0
-        // - attenuation: centibel (dB) - 음량 감소
         let sustain = sustain.clamp(0.0, 1.0);
-        // attenuation을 볼륨 게인에 반영 (0.1 = 1dB, 100 = 10dB, 1.0 = 0dB)
-        // attenuation 0 = 1.0, 100 = 0.1
         let atten_gain = 10f32.powf(-attenuation / 200.0);
         self.volume *= atten_gain;
-        self.adsr.set_params(attack.max(0.001), decay.max(0.001), sustain, release.max(0.001));
+        // 첫 샘플이 0이 아니면 attack을 0.05초로 늘려서 pop noise 방지
+        let attack = if first_sample_val.abs() > 0.01 {
+            attack.max(0.05)
+        } else {
+            attack.max(0.001)
+        };
+        self.adsr.set_params(attack, decay.max(0.001), sustain, release.max(0.001));
         self.adsr.trigger();
         self.state = VoiceState::Attack;
 
@@ -282,22 +320,6 @@ impl Voice {
         // ADSR 레벨 적용
         let level = self.adsr.get_level();
         let mut output = filtered * level * self.volume;
-
-        // 팝 노이즈 방지: 샘플 시작 ramp-in
-        // 처음 64 샘플 동안 0에서 first_sample 값으로 부드럽게 전환
-        let samples_elapsed = self.position as u32;
-        if samples_elapsed < 64 {
-            // ramp gain: 0 -> 1 over 64 samples
-            let ramp_gain = samples_elapsed as f32 / 64.0;
-            // first_sample로 부드럽게 fade in
-            let fade_in = self.first_sample * (1.0 - ramp_gain);
-            output = output * ramp_gain + fade_in * level * self.volume * 0.5;
-        }
-
-        self.last_output = output;
-
-        // 위치 업데이트 (f32 사용으로 CPU 절약)
-        self.position += self.pitch_ratio;
 
         // 팝 노이즈 방지: release 시 fade-out
         if self.state == VoiceState::Release {

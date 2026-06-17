@@ -1,861 +1,1049 @@
-// hibiki.rs - Hibiki 사운드폰트 엔진
-// 자체 사운드폰트 렌더링 엔진
+// hibiki.rs - Hibiki 사운드폰트 엔진 (자체 신디사이저)
+// vendored sf2_oxi의 SoundFont2 파서와 자체 voice.rs / dsp.rs를 통합한
+// OxiSynth 비의존 신디사이저. mimi_core의 API는 그대로 유지.
 
 pub mod sf2_oxi;
 pub mod voice;
 pub mod dsp;
 
-// sf2 별칭 (호환성)
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use sf2_oxi::adapter::{Instrument, InstrumentZone, PresetZone, Sample, Sf2File};
+use voice::{Voice, VoiceManager, VoiceState};
+use dsp::{
+    Celeste, Chorus as DspChorus, Delay as DspDelay, Phaser, Reverb as DspReverb, Tremolo,
+};
+
+// 외부 호환성을 위한 sf2 모듈 (예전 OxiSynth 호환)
 pub mod sf2 {
     pub use crate::sf2_oxi::*;
-    pub use crate::sf2_oxi::adapter::{Sf2File, Sample, Preset, Instrument, PresetZone, InstrumentZone, SampleType};
+    pub use crate::sf2_oxi::adapter::{
+        Instrument, InstrumentZone, Preset, PresetZone, Sample, SampleType, Sf2File,
+    };
 }
 
-// Hibiki 엔진 설정
+/// 호환용 SoundFontId 별칭 (OxiSynth와 같은 이름 유지)
+pub type SoundFontId = u32;
+
+/// 미디 이벤트 (OxiSynth 의존 제거를 위해 자체 정의)
+#[derive(Debug, Clone, Copy)]
+pub enum MidiEvent {
+    NoteOn { channel: u8, key: u8, vel: u8 },
+    NoteOff { channel: u8, key: u8 },
+    ControlChange { channel: u8, ctrl: u8, value: u8 },
+    ProgramChange { channel: u8, program_id: u8 },
+    PitchBend { channel: u8, value: u16 },
+}
+
+/// Hibiki 엔진 설정
 pub struct HibikiSettings {
     sample_rate: f64,
     max_voices: usize,
+    gain: f32,
 }
 
 impl HibikiSettings {
-    // 새로운 설정 인스턴스 생성
     pub fn new() -> Self {
         Self {
             sample_rate: 44100.0,
             max_voices: 256,
+            gain: 0.4,
         }
     }
 
-    // 샘플 레이트 가져오기
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
 
-    // 샘플 레이트 설정
     pub fn set_sample_rate(&mut self, rate: f64) {
         self.sample_rate = rate;
     }
 
-    // 최대 보이스 수 가져오기
     pub fn max_voices(&self) -> usize {
         self.max_voices
     }
 
-    // 최대 보이스 수 설정
     pub fn set_max_voices(&mut self, voices: usize) {
         self.max_voices = voices;
     }
+
+    pub fn gain(&self) -> f32 {
+        self.gain
+    }
+
+    pub fn set_gain(&mut self, gain: f32) {
+        self.gain = gain.clamp(0.0, 10.0);
+    }
 }
 
-// Hibiki 사운드폰트 신디사이저
-pub struct HibikiSynth {
-    sample_rate: f64,
-    gain: std::sync::RwLock<f32>,
-    soundfont: std::sync::RwLock<Option<sf2::Sf2File>>,
-    voice_manager: std::sync::RwLock<voice::VoiceManager>,
-    // 채널 상태 (RwLock으로 보호해서 &self에서도 변경 가능)
-    channels: std::sync::RwLock<[ChannelState; 16]>,
-    // 이펙트
-    chorus: std::sync::RwLock<dsp::Chorus>,
-    reverb: std::sync::RwLock<dsp::Reverb>,
-    delay: std::sync::RwLock<dsp::Delay>,
-    tremolo: std::sync::RwLock<dsp::Tremolo>,
-    phaser: std::sync::RwLock<dsp::Phaser>,
-    celeste: std::sync::RwLock<dsp::Celeste>,
-    // 이펙트 활성화
-    effect_enabled: std::sync::RwLock<EffectEnable>,
-}
-
-/// 이펙트 활성화 상태
-#[derive(Debug, Clone, Copy)]
-struct EffectEnable {
-    reverb: bool,
-    chorus: bool,
-    delay: bool,
-    tremolo: bool,
-    phaser: bool,
-    celeste: bool,
-}
-
-impl Default for EffectEnable {
+impl Default for HibikiSettings {
     fn default() -> Self {
-        Self {
-            reverb: true,
-            chorus: true,
-            delay: false,
-            tremolo: false,
-            phaser: false,
-            celeste: false,
-        }
+        Self::new()
     }
 }
 
-/// RPN/NRPN 상태
-#[derive(Debug, Clone, Copy)]
-enum RpnState {
-    None,
-    Rpn(u16),
-    Nrpn(u16),
+/// 사운드폰트 정보 (mimi_core 호환)
+#[derive(Debug, Clone, Default)]
+pub struct SoundFontInfo {
+    pub samples: Vec<Sample>,
+    pub instruments: Vec<Instrument>,
+    pub presets: Vec<crate::sf2_oxi::adapter::Preset>,
+    pub smpl_data: Arc<Vec<i16>>,
+    pub name: String,
 }
 
-/// 채널 상태 (확장)
-#[derive(Debug, Clone, Copy)]
-struct ChannelState {
-    // 기본
-    program: u8,
-    bank: u16,
-    volume: u8,
-    pan: u8,
-    expression: u8,
-    // 피치
-    pitch_bend: i16,
-    pitch_bend_sens: u8,
-    // 모듈레이션
-    modulation: u8,
-    // 포르타멘토
-    portamento_time: u8,
-    portamento_on: bool,
-    portamento_control: u8,
-    last_note: u8,
-    // 이펙트 (GS/XG)
-    reverb_send: u8,
-    chorus_send: u8,
-    // GS 확장
-    scale_tune: u8,
-    // RPN/NRPN
-    rpn_state: RpnState,
-    // GS RPN
-    vibrato_rate: u8,
-    vibrato_depth: u8,
-    vibrato_delay: u8,
-    // XG
-    filter_cutoff: u8,
-    filter_resonance: u8,
-}
-
-impl Default for ChannelState {
-    fn default() -> Self {
-        Self {
-            program: 0,
-            bank: 0,
-            volume: 100,
-            pan: 64,
-            expression: 127,
-            pitch_bend: 0,
-            pitch_bend_sens: 2,
-            modulation: 0,
-            portamento_time: 0,
-            portamento_on: false,
-            portamento_control: 0,
-            last_note: 60,
-            reverb_send: 40,
-            chorus_send: 0,
-            scale_tune: 0,
-            rpn_state: RpnState::None,
-            vibrato_rate: 64,
-            vibrato_depth: 64,
-            vibrato_delay: 64,
-            filter_cutoff: 127,
-            filter_resonance: 0,
-        }
-    }
-}
-
-impl HibikiSynth {
-    // 새로운 신디사이저 인스턴스 생성
-    pub fn new(settings: HibikiSettings) -> Result<Self, String> {
-        let sample_rate = settings.sample_rate;
-
-        Ok(Self {
-            sample_rate,
-            gain: std::sync::RwLock::new(1.0),
-            soundfont: std::sync::RwLock::new(None),
-            voice_manager: std::sync::RwLock::new(voice::VoiceManager::new(settings.max_voices)),
-            channels: std::sync::RwLock::new([ChannelState::default(); 16]),
-            chorus: std::sync::RwLock::new(dsp::Chorus::new(sample_rate as f32)),
-            reverb: std::sync::RwLock::new(dsp::Reverb::new(sample_rate as f32)),
-            delay: std::sync::RwLock::new(dsp::Delay::new(sample_rate as f32)),
-            tremolo: std::sync::RwLock::new(dsp::Tremolo::new(sample_rate as f32)),
-            phaser: std::sync::RwLock::new(dsp::Phaser::new(sample_rate as f32)),
-            celeste: std::sync::RwLock::new(dsp::Celeste::new(sample_rate as f32)),
-            effect_enabled: std::sync::RwLock::new(EffectEnable::default()),
-        })
-    }
-
-    // 사운드폰트 로드
-    pub fn sfload(&self, path: &str, _reset_presets: bool) -> Result<u32, String> {
-        // 파일 열기
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| format!("Failed to open file: {}", e))?;
-
-        // OxiSynth SoundFont2로 파싱
-        let sf2 = sf2::SoundFont2::load(&mut file)
-            .map_err(|e| format!("Failed to parse SF2: {:?}", e))?;
-
-        // smpl 데이터는 별도 file에서 읽기 (SampleChunk의 offset)
-        let smpl_chunk = sf2.sample_data.smpl;
-        let sf2_file = sf2::adapter::Sf2File::from_oxi(sf2, smpl_chunk, &mut file)
-            .map_err(|e| format!("Failed to convert: {}", e))?;
-
-        // 프리셋 개수 반환
-        let preset_count = sf2_file.presets.len() as u32;
-
-        // 사운드폰트 저장
-        *self.soundfont.write().unwrap() = Some(sf2_file);
-
-        // 보이스 초기화
-        self.voice_manager.write().unwrap().reset();
-
-        Ok(preset_count)
-    }
-
-    // 사운드폰트 언로드
-    pub fn sfunload(&self) {
-        *self.soundfont.write().unwrap() = None;
-        self.voice_manager.write().unwrap().reset();
-    }
-
-    // 게인 설정
-    pub fn set_gain(&self, gain: f32) {
-        *self.gain.write().unwrap() = gain.clamp(0.0, 10.0);
-    }
-
-    // 게인 가져오기
-    pub fn get_gain(&self) -> f32 {
-        *self.gain.read().unwrap()
-    }
-
-    // 이펙트 설정
-    pub fn set_effect_level(&self, reverb: u8, chorus: u8) {
-        // 0-127 -> 0.0-1.0
-        self.reverb.write().unwrap().set_params(reverb as f32 / 127.0, 0.5);
-        self.chorus.write().unwrap().set_params(1.0 + chorus as f32 / 127.0 * 2.0, chorus as f32 / 127.0, 25.0);
-    }
-
-    // 노트 온 (음 발생)
-    pub fn note_on(&self, channel: u32, note: u32, velocity: u32) -> Result<(), String> {
-        if channel >= 16 || note > 127 || velocity > 127 {
-            return Err("Invalid parameter".to_string());
-        }
-
-        let channel = channel as usize;
-        let note = note as u8;
-        let velocity = velocity as u8;
-
-        if velocity == 0 {
-            // velocity 0은 note off로 처리
-            return self.note_off(channel as u32, note as u32);
-        }
-
-        let sf = self.soundfont.read().unwrap();
-        let sf = sf.as_ref().ok_or("No soundfont loaded")?;
-
-        // 채널 상태 읽기
-        let ch_state = self.channels.read().unwrap()[channel];
-
-        // 뱅크 셀렉트 처리
-        let bank = ch_state.bank;
-        let program = ch_state.program as u16;
-
-        // 프리셋 찾기
-        let preset = sf.presets.iter()
-            .find(|p| p.bank == bank && p.preset_num == program)
-            .or_else(|| sf.presets.iter().find(|p| p.bank == 0 && p.preset_num == program))
-            .or_else(|| sf.presets.iter().find(|p| p.bank == bank && p.preset_num == 0))
-            .or_else(|| sf.presets.iter().find(|p| p.bank == 128 && p.preset_num == program))
-            .ok_or("Preset not found")?;
-
-        // 노트에 맞는 악기 존 찾기
-        for zone in &preset.zones {
-            let (key_lo, key_hi) = zone.key_range;
-            let (vel_lo, vel_hi) = zone.velocity_range;
-
-            if note >= key_lo && note <= key_hi
-                && velocity >= vel_lo && velocity <= vel_hi
-            {
-                if let Some(inst_idx) = zone.instrument_index {
-                    if inst_idx >= sf.instruments.len() {
-                        continue;
-                    }
-                    let instrument = &sf.instruments[inst_idx];
-
-                    // 악기에서 샘플 찾기
-                    for inst_zone in &instrument.zones {
-                        if let Some(sample_idx) = inst_zone.sample_index {
-                            if sample_idx >= sf.samples.len() {
-                                continue;
-                            }
-                            let sample = &sf.samples[sample_idx];
-
-                            // 보이스 트리거 (SF2 envelope 적용)
-                            let mut vm = self.voice_manager.write().unwrap();
-                            if let Some(voice) = vm.find_free_voice() {
-                                voice.trigger(
-                                    sample,
-                                    sf.smpl_data.clone(),
-                                    note,
-                                    velocity,
-                                    self.sample_rate as f32,
-                                    inst_zone.attack,
-                                    inst_zone.decay,
-                                    inst_zone.sustain,
-                                    inst_zone.release,
-                                    inst_zone.attenuation,
-                                );
-
-                                // 채널 설정 적용
-                                voice.pan = ch_state.pan as f32 / 127.0;
-                                // 볼륨: CC7 * CC11 (expression) / 127^2
-                                let vol = (ch_state.volume as f32 / 127.0)
-                                    * (ch_state.expression as f32 / 127.0);
-                                voice.set_volume(vol);
-
-                                // 피치벤드 적용
-                                let bend = ch_state.pitch_bend as f32;
-                                let sens = ch_state.pitch_bend_sens as f32;
-                                voice.apply_pitch_bend(bend, sens);
-
-                                // 모듈레이션 (LFO)
-                                let mod_depth = ch_state.modulation as f32 / 127.0;
-                                voice.set_modulation_depth(mod_depth);
-
-                                // 필터 설정 (CC71:resonance, CC74:cutoff)
-                                let cutoff = ch_state.filter_cutoff as f32;
-                                let resonance = ch_state.filter_resonance as f32;
-                                voice.set_filter(cutoff, resonance);
-
-                                // 비브라토 설정 (CC76)
-                                let vib_depth = ch_state.vibrato_depth as f32;
-                                voice.set_vibrato_depth(vib_depth);
-                            }
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    // 노트 오프 (음 정지)
-    pub fn note_off(&self, channel: u32, note: u32) -> Result<(), String> {
-        if channel >= 16 || note > 127 {
-            return Err("Invalid parameter".to_string());
-        }
-
-        // 모든 관련 보이스를 릴리즈
-        let mut vm = self.voice_manager.write().unwrap();
-        for voice in &mut vm.voices {
-            // TODO: 채널, 노트 매칭 확인
-            if voice.state != voice::VoiceState::Off {
-                voice.release();
-            }
-        }
-
-        Ok(())
-    }
-
-    // 컨트롤러 변경 (확장)
-    pub fn cc(&self, channel: u32, controller: u32, value: u32) -> Result<(), String> {
-        if channel >= 16 || controller > 127 || value > 127 {
-            return Err("Invalid parameter".to_string());
-        }
-
-        let channel = channel as usize;
-        let controller = controller as u8;
-        let value = value as u8;
-
-        // RPN/NRPN 상태 확인
-        let rpn_state = self.channels.read().unwrap()[channel].rpn_state;
-        match rpn_state {
-            RpnState::Rpn(rpn) => {
-                match rpn {
-                    0 => {
-                        // Pitch Bend Sensitivity
-                        self.channels.write().unwrap()[channel].pitch_bend_sens = value;
-                    }
-                    1 => {
-                        // Fine Tuning (단위: cents, 8192 = 0 cents)
-                    }
-                    2 => {
-                        // Coarse Tuning (단위: semitones, 8192 = 0)
-                    }
-                    4 => {
-                        // Channel Volume LSB (거의 사용 안 함)
-                    }
-                    _ => {}
-                }
-                self.channels.write().unwrap()[channel].rpn_state = RpnState::None;
-                return Ok(());
-            }
-            RpnState::Nrpn(_) => {
-                // NRPN 처리 (XG 확장)
-                self.channels.write().unwrap()[channel].rpn_state = RpnState::None;
-                return Ok(());
-            }
-            RpnState::None => {}
-        }
-
-        match controller {
-            // 기본 CC
-            0 => {
-                // 뱅크 셀렉트 MSB
-                let mut chs = self.channels.write().unwrap();
-                chs[channel].bank = (chs[channel].bank & 0x7F) | ((value as u16) << 7);
-            }
-            1 => {
-                // 모듈레이션 (모드 체인저)
-                self.channels.write().unwrap()[channel].modulation = value;
-            }
-            5 => {
-                // 포르타멘토 시간
-                self.channels.write().unwrap()[channel].portamento_time = value;
-            }
-            6 => {
-                // Data Entry MSB
-            }
-            7 => {
-                // 볼륨
-                self.channels.write().unwrap()[channel].volume = value;
-            }
-            10 => {
-                // 패너
-                self.channels.write().unwrap()[channel].pan = value;
-            }
-            11 => {
-                // 표현력
-                self.channels.write().unwrap()[channel].expression = value;
-            }
-            32 => {
-                // 뱅크 셀렉트 LSB
-                let mut chs = self.channels.write().unwrap();
-                chs[channel].bank = (chs[channel].bank & 0x3F80) | (value as u16);
-            }
-            37 => {
-                // Data Entry LSB
-            }
-            38 => {
-                // Data Entry LSB (NRPN용)
-            }
-            64 => {
-                // Sustain (Damper) Pedal
-                if value >= 64 {
-                    // Sustain on
-                } else {
-                    // Sustain off - 모든 음 릴리즈
-                    let mut vm = self.voice_manager.write().unwrap();
-                    for voice in &mut vm.voices {
-                        voice.release();
-                    }
-                }
-            }
-            65 => {
-                // 포르타멘토 On/Off
-                self.channels.write().unwrap()[channel].portamento_on = value >= 64;
-            }
-            71 => {
-                // 필터 공진 (GS)
-                self.channels.write().unwrap()[channel].filter_resonance = value;
-                self.apply_filter_to_channel(channel);
-            }
-            72 => {
-                // 필터 컷오프 해제 시간
-            }
-            73 => {
-                // 공격 시간
-            }
-            74 => {
-                // 필터 컷오프 (GS/XG)
-                self.channels.write().unwrap()[channel].filter_cutoff = value;
-                self.apply_filter_to_channel(channel);
-            }
-            75 => {
-                // 밝기
-            }
-            76 => {
-                // vibrato depth (GS)
-                self.channels.write().unwrap()[channel].vibrato_depth = value;
-                self.apply_vibrato_to_channel(channel);
-            }
-            77 => {
-                // channel mode (GS)
-            }
-            78 => {
-                // 밝기 (GS)
-            }
-            84 => {
-                // 포르타멘토 control
-                self.channels.write().unwrap()[channel].portamento_control = value;
-            }
-            91 => {
-                // Reverb Send Level
-                self.channels.write().unwrap()[channel].reverb_send = value;
-                self.reverb.write().unwrap().set_params(value as f32 / 127.0, 0.5);
-            }
-            92 => {
-                // Tremolo (CC92: 0-127 -> 트레몰로 깊이)
-                self.tremolo.write().unwrap().set_params(5.0, value as f32 / 127.0);
-                self.effect_enabled.write().unwrap().tremolo = value > 0;
-            }
-            93 => {
-                // Chorus Send Level
-                self.channels.write().unwrap()[channel].chorus_send = value;
-                self.chorus.write().unwrap().set_params(
-                    1.0 + value as f32 / 127.0 * 2.0,
-                    value as f32 / 127.0,
-                    25.0,
-                );
-            }
-            94 => {
-                // Celeste/Detune (GS)
-                let cents = (value as f32 - 64.0) * 0.78;
-                self.celeste.write().unwrap().set_detune(cents);
-                self.effect_enabled.write().unwrap().celeste = value != 64;
-            }
-            95 => {
-                // 페이저 (GS)
-                self.phaser.write().unwrap().set_params(0.5, value as f32 / 127.0, 0.3);
-                self.effect_enabled.write().unwrap().phaser = value > 0;
-            }
-            96 => {
-                // Data Increment
-            }
-            97 => {
-                // Data Decrement
-            }
-            98 => {
-                // NRPN LSB
-                self.channels.write().unwrap()[channel].rpn_state = RpnState::Nrpn(value as u16);
-            }
-            99 => {
-                // NRPN MSB
-                let mut chs = self.channels.write().unwrap();
-                let nrpn = chs[channel].rpn_state;
-                match nrpn {
-                    RpnState::Nrpn(lsb) => {
-                        chs[channel].rpn_state = RpnState::Nrpn((value as u16) << 7 | lsb);
-                    }
-                    _ => {
-                        chs[channel].rpn_state = RpnState::Nrpn(value as u16);
-                    }
-                }
-            }
-            100 => {
-                // RPN LSB
-                let mut chs = self.channels.write().unwrap();
-                match value {
-                    127 => chs[channel].rpn_state = RpnState::None, // Reset
-                    _ => {
-                        let rpn = chs[channel].rpn_state;
-                        match rpn {
-                            RpnState::Rpn(msb) => {
-                                chs[channel].rpn_state = RpnState::Rpn((msb << 7) | value as u16);
-                            }
-                            _ => {
-                                chs[channel].rpn_state = RpnState::Rpn(value as u16);
-                            }
-                        }
-                    }
-                }
-            }
-            101 => {
-                // RPN MSB
-                let mut chs = self.channels.write().unwrap();
-                match value {
-                    127 => chs[channel].rpn_state = RpnState::None, // Reset All
-                    _ => {
-                        chs[channel].rpn_state = RpnState::Rpn((value as u16) << 7);
-                    }
-                }
-            }
-            120 => {
-                // All Sound Off
-                let mut vm = self.voice_manager.write().unwrap();
-                vm.reset();
-            }
-            121 => {
-                // Reset Controllers
-                self.channels.write().unwrap()[channel] = ChannelState::default();
-            }
-            123 => {
-                // All Notes Off
-                let mut vm = self.voice_manager.write().unwrap();
-                for voice in &mut vm.voices {
-                    voice.release();
-                }
-            }
-            124 => {
-                // Omni Off
-            }
-            125 => {
-                // Omni On
-            }
-            126 => {
-                // Mono Mode (Poly Off)
-            }
-            127 => {
-                // Poly Mode (Mono Off)
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-
-    // 프로그램 변경 (악기 변경)
-    pub fn program_change(&self, channel: u32, program: u32) -> Result<(), String> {
-        if channel >= 16 || program > 127 {
-            return Err("Invalid parameter".to_string());
-        }
-
-        self.channels.write().unwrap()[channel as usize].program = program as u8;
-        Ok(())
-    }
-
-    // 피치 벤드
-    pub fn pitch_bend(&self, channel: u32, value: u32) -> Result<(), String> {
-        if channel >= 16 || value > 16383 {
-            return Err("Invalid parameter".to_string());
-        }
-
-        // MIDI 피치벤드: 0-16383, 중앙 8192
-        let bend = value as i32 - 8192;
-        self.channels.write().unwrap()[channel as usize].pitch_bend = bend as i16;
-        Ok(())
-    }
-
-    // 피치 벤드 감도 설정
-    pub fn pitch_wheel_sens(&self, channel: u32, value: u32) -> Result<(), String> {
-        if channel >= 16 || value > 24 {
-            return Err("Invalid parameter".to_string());
-        }
-
-        self.channels.write().unwrap()[channel as usize].pitch_bend_sens = value as u8;
-        Ok(())
-    }
-
-    // 뱅크 셀렉트
-    pub fn bank_select(&self, channel: u32, bank: u32) -> Result<(), String> {
-        if channel >= 16 || bank > 16383 {
-            return Err("Invalid parameter".to_string());
-        }
-
-        self.channels.write().unwrap()[channel as usize].bank = bank as u16;
-        Ok(())
-    }
-
-    // 시스템 리셋
-    pub fn system_reset(&self) -> Result<(), String> {
-        let mut chs = self.channels.write().unwrap();
-        for i in 0..16 {
-            chs[i] = ChannelState::default();
-        }
-        drop(chs);
-        self.voice_manager.write().unwrap().reset();
-        self.chorus.write().unwrap().reset();
-        self.reverb.write().unwrap().reset();
-        self.delay.write().unwrap().reset();
-        self.tremolo.write().unwrap().reset();
-        self.phaser.write().unwrap().reset();
-        self.celeste.write().unwrap().reset();
-        Ok(())
-    }
-
-    // 샘플 버퍼에 오디오 데이터 쓰기
-    pub fn write_samples(&self, output: &mut [f32; 2]) -> Result<(), String> {
-        let gain = *self.gain.read().unwrap();
-
-        // 모든 보이스 렌더링
-        let mut left = 0.0f32;
-        let mut right = 0.0f32;
-
-        let mut vm = self.voice_manager.write().unwrap();
-        for voice in &mut vm.voices {
-            if voice.state != voice::VoiceState::Off {
-                let (l, r) = voice.render_sample();
-                left += l;
-                right += r;
-            }
-        }
-
-        // 이펙트 적용 (후에 추가)
-        // left = self.chorus.process(left);
-        // left = self.reverb.process(left);
-        // right = self.chorus.process(right);
-        // right = self.reverb.process(right);
-
-        // 게인 적용
-        left *= gain;
-        right *= gain;
-
-        // 클리핑
-        output[0] = left.clamp(-1.0, 1.0);
-        output[1] = right.clamp(-1.0, 1.0);
-
-        Ok(())
-    }
-
-    // 샘플 버퍼에 오디오 데이터 쓰기 (이펙트 포함)
-    pub fn write_samples_with_effects(&self, output: &mut [f32; 2]) -> Result<(), String> {
-        let gain = *self.gain.read().unwrap();
-
-        // 모든 보이스 렌더링
-        let mut left = 0.0f32;
-        let mut right = 0.0f32;
-
-        let mut vm = self.voice_manager.write().unwrap();
-        for voice in &mut vm.voices {
-            if voice.state != voice::VoiceState::Off {
-                let (l, r) = voice.render_sample();
-                left += l;
-                right += r;
-            }
-        }
-
-        // 이펙트 적용
-        let ee = *self.effect_enabled.read().unwrap();
-        if ee.tremolo {
-            left = self.tremolo.write().unwrap().process(left);
-            right = self.tremolo.write().unwrap().process(right);
-        }
-        if ee.celeste {
-            left += self.celeste.write().unwrap().process(left);
-            right += self.celeste.write().unwrap().process(right);
-        }
-        if ee.phaser {
-            left = self.phaser.write().unwrap().process(left);
-            right = self.phaser.write().unwrap().process(right);
-        }
-        if ee.chorus {
-            let (l, r) = self.chorus.write().unwrap().process_stereo(left, right);
-            left = l;
-            right = r;
-        }
-        if ee.reverb {
-            let (l, r) = self.reverb.write().unwrap().process_stereo(left, right);
-            left = l;
-            right = r;
-        }
-
-        // 게인 적용
-        left *= gain;
-        right *= gain;
-
-        // 클리핑
-        output[0] = left.clamp(-1.0, 1.0);
-        output[1] = right.clamp(-1.0, 1.0);
-
-        Ok(())
-    }
-
-    // 로드된 사운드폰트 정보 가져오기
-    pub fn get_soundfont_info(&self) -> Option<sf2::Sf2File> {
-        self.soundfont.read().unwrap().clone()
-    }
-
-    // 활성 보이스 수 가져오기
-    pub fn active_voices(&self) -> usize {
-        let vm = self.voice_manager.read().unwrap();
-        vm.active_count()
-    }
-
-    // 이펙트 활성화/비활성화
-    pub fn enable_effect(&self, reverb: bool, chorus: bool, delay: bool) {
-        let mut ee = self.effect_enabled.write().unwrap();
-        ee.reverb = reverb;
-        ee.chorus = chorus;
-        ee.delay = delay;
-    }
-
-    // 트레몰로 활성화
-    pub fn enable_tremolo(&self, on: bool) {
-        self.effect_enabled.write().unwrap().tremolo = on;
-    }
-
-    // 페이저 활성화
-    pub fn enable_phaser(&self, on: bool) {
-        self.effect_enabled.write().unwrap().phaser = on;
-    }
-
-    // Celeste 활성화
-    pub fn enable_celeste(&self, on: bool) {
-        self.effect_enabled.write().unwrap().celeste = on;
-    }
-
-    // 트레몰로 파라미터 설정
-    pub fn set_tremolo_params(&self, rate: f32, depth: f32) {
-        self.tremolo.write().unwrap().set_params(rate, depth);
-    }
-
-    // 페이저 파라미터 설정
-    pub fn set_phaser_params(&self, rate: f32, depth: f32, feedback: f32) {
-        self.phaser.write().unwrap().set_params(rate, depth, feedback);
-    }
-
-    // Celeste detune 설정 (cents)
-    pub fn set_celeste_detune(&self, cents: f32) {
-        self.celeste.write().unwrap().set_detune(cents);
-    }
-
-    // 특정 채널의 활성 보이스에 필터 적용
-    fn apply_filter_to_channel(&self, channel: usize) {
-        let (cutoff, resonance) = {
-            let chs = self.channels.read().unwrap();
-            (chs[channel].filter_cutoff as f32, chs[channel].filter_resonance as f32)
-        };
-        let mut vm = self.voice_manager.write().unwrap();
-        for voice in &mut vm.voices {
-            if voice.state != voice::VoiceState::Off {
-                voice.set_filter(cutoff, resonance);
-            }
-        }
-    }
-
-    // 특정 채널의 활성 보이스에 비브라토 적용
-    fn apply_vibrato_to_channel(&self, channel: usize) {
-        let depth = self.channels.read().unwrap()[channel].vibrato_depth as f32;
-        let mut vm = self.voice_manager.write().unwrap();
-        for voice in &mut vm.voices {
-            if voice.state != voice::VoiceState::Off {
-                voice.set_vibrato_depth(depth);
-            }
-        }
-    }
-
-    // 코러스 파라미터 설정
-    pub fn set_chorus_params(&self, rate: f32, depth: f32, delay_ms: f32) {
-        self.chorus.write().unwrap().set_params(rate, depth, delay_ms);
-    }
-
-    // 리버브 파라미터 설정
-    pub fn set_reverb_params(&self, size: f32, damping: f32) {
-        self.reverb.write().unwrap().set_params(size, damping);
-    }
-}
-
-// Hibiki 로그 핸들러
+/// Hibiki Logger (API 호환용)
 pub struct HibikiLogger;
 
 impl HibikiLogger {
-    pub fn new<F>(_callback: F) -> Self
-    where
-        F: Fn(u32, &str) + Send + 'static,
-    {
+    pub fn new() -> Self {
         Self
     }
 }
 
-// Hibiki 로그 레벨
-pub mod log_level {
-    pub const PANIC: u32 = 1;
-    pub const ERROR: u32 = 2;
-    pub const WARNING: u32 = 3;
-    pub const INFO: u32 = 4;
-    pub const DEBUG: u32 = 5;
+impl Default for HibikiLogger {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-// 로그 레벨 설정
-pub fn set_log_levels(_levels: &[u32], _handler: HibikiLogger) {
-    // TODO: 실제 로깅 구현
+/// 로그 레벨
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LogLevel {
+    None = 0,
+    Error = 1,
+    Warn = 2,
+    Info = 3,
+    Debug = 4,
+    Trace = 5,
+}
+
+static CURRENT_LOG_LEVEL: std::sync::Mutex<LogLevel> = std::sync::Mutex::new(LogLevel::Warn);
+
+/// 로그 레벨 설정
+pub fn log_level(level: LogLevel) {
+    *CURRENT_LOG_LEVEL.lock().unwrap() = level;
+}
+
+/// 로그 레벨들을 한 번에 설정 (API 호환)
+pub fn set_log_levels(_synth: &HibikiSynth, synth_level: LogLevel, _voice_level: LogLevel) {
+    *CURRENT_LOG_LEVEL.lock().unwrap() = synth_level;
+}
+
+/// 전역 로그 레벨 설정
+pub fn set_log_levels_global(synth_level: LogLevel, _voice_level: LogLevel) {
+    *CURRENT_LOG_LEVEL.lock().unwrap() = synth_level;
+}
+
+/// 미디 채널 상태 (CC, RPN/NRPN, bank, program, pitch bend 등)
+#[derive(Debug, Clone)]
+pub struct ChannelState {
+    /// Bank Select MSB (CC#0)
+    pub bank_msb: u8,
+    /// Bank Select LSB (CC#32)
+    pub bank_lsb: u8,
+    /// Program Number
+    pub program: u8,
+    /// 드럼 채널 여부
+    pub is_drum: bool,
+    /// 채널 볼륨 (CC#7, 0~127)
+    pub volume: u8,
+    /// 패닝 (CC#10, 0~127, 64 = center)
+    pub pan: u8,
+    /// 익스프레션 (CC#11, 0~127)
+    pub expression: u8,
+    /// 피치벤드 (0~16383, center 8192)
+    pub pitch_bend: u16,
+    /// 피치 휠 감도 (RPN 0,0 결과, 반음 단위)
+    pub pitch_bend_range: u8,
+    /// 모듈레이션 (CC#1, 0~127)
+    pub modulation: u8,
+    /// 필터 컷오프 (CC#74, 0~127)
+    pub cutoff: u8,
+    /// 필터 공진 (CC#71, 0~127)
+    pub resonance: u8,
+    /// 비브라토 깊이 (CC#76, 0~127)
+    pub vibrato_depth: u8,
+    /// 비브라토 레이트 (Hz, CC#77에 매핑)
+    pub vibrato_rate: u8,
+    /// 어택 타임 (CC#73)
+    pub attack_time: u8,
+    /// 디케이 타임 (CC#75)
+    pub decay_time: u8,
+    /// 브라이트니스 (CC#72)
+    pub brightness: u8,
+    /// 이펙트 send
+    pub reverb_send: u8,    // CC#91
+    pub chorus_send: u8,    // CC#93
+    pub delay_send: u8,     // CC#94
+    pub tremolo_send: u8,   // CC#92
+    pub phaser_send: u8,    // CC#95
+    pub celeste_send: u8,   // (CC#96 등)
+    /// RPN/NRPN 추적
+    pub rpn_msb: u8,
+    pub rpn_lsb: u8,
+    pub nrpn_active: bool,
+    /// 페달
+    pub sustain_pedal: bool, // CC#64
+    pub sostenuto: bool,    // CC#66
+    pub soft_pedal: bool,    // CC#67
+    pub hold2: bool,         // CC#69
+}
+
+impl ChannelState {
+    fn new() -> Self {
+        Self {
+            bank_msb: 0,
+            bank_lsb: 0,
+            program: 0,
+            is_drum: false,
+            volume: 100,
+            pan: 64,
+            expression: 127,
+            pitch_bend: 8192,
+            pitch_bend_range: 2,
+            modulation: 0,
+            cutoff: 127,
+            resonance: 0,
+            vibrato_depth: 0,
+            vibrato_rate: 0,
+            attack_time: 64,
+            decay_time: 64,
+            brightness: 64,
+            reverb_send: 40,
+            chorus_send: 0,
+            delay_send: 0,
+            tremolo_send: 0,
+            phaser_send: 0,
+            celeste_send: 0,
+            rpn_msb: 127,
+            rpn_lsb: 127,
+            nrpn_active: false,
+            sustain_pedal: false,
+            sostenuto: false,
+            soft_pedal: false,
+            hold2: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// 정규화된 패닝 (-1.0: 왼쪽, 0.0: 중앙, 1.0: 오른쪽)
+    fn pan_normalized(&self) -> f32 {
+        (self.pan as f32 - 64.0) / 63.0
+    }
+
+    /// 정규화된 볼륨 (0.0~1.0)
+    fn volume_normalized(&self) -> f32 {
+        (self.volume as f32 / 127.0) * (self.expression as f32 / 127.0)
+    }
+
+    /// 피치벤드를 cents로 변환
+    fn pitch_bend_cents(&self) -> f32 {
+        let bend = (self.pitch_bend as i32 - 8192) as f32;
+        bend / 8192.0 * (self.pitch_bend_range as f32 * 100.0)
+    }
+}
+
+/// 이펙트 체인
+struct SynthEffects {
+    reverb: DspReverb,
+    chorus: DspChorus,
+    delay: DspDelay,
+    tremolo: Tremolo,
+    phaser: Phaser,
+    celeste: Celeste,
+    reverb_enabled: bool,
+    chorus_enabled: bool,
+    delay_enabled: bool,
+    tremolo_enabled: bool,
+    phaser_enabled: bool,
+    celeste_enabled: bool,
+    /// 마스터 wet/dry 비율
+    reverb_wet: f32,
+    chorus_wet: f32,
+    delay_wet: f32,
+}
+
+impl SynthEffects {
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            reverb: DspReverb::new(sample_rate),
+            chorus: DspChorus::new(sample_rate),
+            delay: DspDelay::new(sample_rate),
+            tremolo: Tremolo::new(sample_rate),
+            phaser: Phaser::new(sample_rate),
+            celeste: Celeste::new(sample_rate),
+            reverb_enabled: true,
+            chorus_enabled: true,
+            delay_enabled: false,
+            tremolo_enabled: false,
+            phaser_enabled: false,
+            celeste_enabled: false,
+            reverb_wet: 0.3,
+            chorus_wet: 0.5,
+            delay_wet: 0.4,
+        }
+    }
+}
+
+/// Hibiki 사운드폰트 신디사이저
+/// 자체 SF2 파서 + voice 합성 + 이펙트 체인 통합
+pub struct HibikiSynth {
+    settings: HibikiSettings,
+    /// 로드된 사운드폰트
+    sf2: Option<Sf2File>,
+    /// 16개 MIDI 채널 상태
+    channels: [ChannelState; 16],
+    /// 단일 보이스 풀
+    voice_manager: VoiceManager,
+    /// 활성 노트 추적: (channel, key) -> voice index in voice_manager.voices
+    active_notes: HashMap<(u8, u8), usize>,
+    /// 채널별 키 홀드 (hold2 등)로 보이스가 release 되지 않은 노트
+    held_notes: HashMap<(u8, u8), usize>,
+    /// 이펙트 체인
+    effects: SynthEffects,
+    /// 샘플 레이트
+    sample_rate: f32,
+    /// 마스터 게인
+    gain: f32,
+}
+
+impl HibikiSynth {
+    pub fn new(settings: HibikiSettings) -> Result<Self, String> {
+        let sample_rate = settings.sample_rate as f32;
+        Ok(Self {
+            settings: HibikiSettings {
+                sample_rate: settings.sample_rate,
+                max_voices: settings.max_voices,
+                gain: settings.gain,
+            },
+            sf2: None,
+            channels: [
+                ChannelState::new(), ChannelState::new(), ChannelState::new(), ChannelState::new(),
+                ChannelState::new(), ChannelState::new(), ChannelState::new(), ChannelState::new(),
+                ChannelState::new(), ChannelState::new(), ChannelState::new(), ChannelState::new(),
+                ChannelState::new(), ChannelState::new(), ChannelState::new(), ChannelState::new(),
+            ],
+            voice_manager: VoiceManager::new(settings.max_voices),
+            active_notes: HashMap::new(),
+            held_notes: HashMap::new(),
+            effects: SynthEffects::new(sample_rate),
+            sample_rate,
+            gain: settings.gain,
+        })
+    }
+
+    /// 사운드폰트 로드 (sf2_oxi 기반 자체 파싱)
+    pub fn sfload(&mut self, path: &str, _reset_presets: bool) -> Result<u32, String> {
+        let sf = Sf2File::from_path(path)?;
+        let preset_count = sf.presets.len() as u32;
+        self.sf2 = Some(sf);
+        Ok(preset_count)
+    }
+
+    /// 사운드폰트 정보 가져오기
+    pub fn get_soundfont_info(&self) -> Option<SoundFontInfo> {
+        self.sf2.as_ref().map(|sf| SoundFontInfo {
+            samples: sf.samples.clone(),
+            instruments: sf.instruments.clone(),
+            presets: sf.presets.clone(),
+            smpl_data: sf.smpl_data.clone(),
+            name: sf.name.clone(),
+        })
+    }
+
+    /// 게인 설정
+    pub fn set_gain(&mut self, gain: f32) {
+        self.gain = gain.clamp(0.0, 10.0);
+    }
+
+    /// 게인 가져오기
+    pub fn get_gain(&self) -> f32 {
+        self.gain
+    }
+
+    /// MIDI 이벤트를 자체 큐에 적재
+    pub fn send_event(&mut self, event: MidiEvent) -> Result<(), String> {
+        match event {
+            MidiEvent::NoteOn { channel, key, vel } => self.note_on(channel as u32, key as u32, vel as u32),
+            MidiEvent::NoteOff { channel, key } => self.note_off(channel as u32, key as u32),
+            MidiEvent::ControlChange { channel, ctrl, value } => {
+                self.cc(channel as u32, ctrl as u32, value as u32)
+            }
+            MidiEvent::ProgramChange { channel, program_id } => {
+                self.program_change(channel as u32, program_id as u32)
+            }
+            MidiEvent::PitchBend { channel, value } => self.pitch_bend(channel as u32, value as u32),
+        }
+    }
+
+    /// 노트 온
+    pub fn note_on(&mut self, channel: u32, key: u32, vel: u32) -> Result<(), String> {
+        if vel == 0 {
+            return self.note_off(channel, key);
+        }
+        let ch = channel as usize;
+        if ch >= 16 {
+            return Err(format!("invalid channel {}", channel));
+        }
+
+        // 드럼 채널이고 키가 이미 활성하면 같은 voice 재활용
+        let lookup = (ch as u8, key as u8);
+        if let Some(&vidx) = self.active_notes.get(&lookup) {
+            if let Some(v) = self.voice_manager.voices.get_mut(vidx) {
+                v.release();
+            }
+        }
+
+        // SF2에서 적절한 preset/instrument/zone/sample을 찾는다
+        let (sample, _instrument, attack, decay, sustain, release, attenuation) = {
+            let sf = match self.sf2.as_ref() {
+                Some(sf) => sf,
+                None => return Err("no soundfont loaded".to_string()),
+            };
+            find_voice_params(sf, &self.channels[ch], key as u8, vel as u8)
+                .ok_or_else(|| "no matching instrument zone".to_string())?
+        };
+
+        // 보이스 할당
+        let vidx = {
+            let voices = &mut self.voice_manager.voices;
+            // 비활성 보이스 찾기
+            let mut idx = None;
+            for (i, v) in voices.iter().enumerate() {
+                if v.state == VoiceState::Off {
+                    idx = Some(i);
+                    break;
+                }
+            }
+            let idx = match idx {
+                Some(i) => i,
+                None => {
+                    // 풀이 가득 차면 가장 오래된 sustain 보이스를 release
+                    let mut oldest = None;
+                    for (i, v) in voices.iter().enumerate() {
+                        if v.state == VoiceState::Sustain || v.state == VoiceState::Decay {
+                            oldest = Some(i);
+                            break;
+                        }
+                    }
+                    match oldest {
+                        Some(i) => {
+                            voices[i].release();
+                            i
+                        }
+                        None => {
+                            // 풀이 가득 차고 모든 보이스가 release 중이면 가장 오래된 것 steal
+                            voices[0].release();
+                            0
+                        }
+                    }
+                }
+            };
+            idx
+        };
+
+        // 보이스 트리거
+        let smpl_data = {
+            let sf = self.sf2.as_ref().unwrap();
+            sf.smpl_data.clone()
+        };
+        {
+            let voice = &mut self.voice_manager.voices[vidx];
+            voice.trigger(
+                &sample,
+                smpl_data,
+                key as u8,
+                vel as u8,
+                self.sample_rate,
+                attack,
+                decay,
+                sustain,
+                release,
+                attenuation,
+                ch as u8,
+            );
+            // 채널 상태 반영
+            let ch_state = &self.channels[ch];
+            // 패닝
+            voice.pan = ch_state.pan_normalized() * 0.5 + 0.5;
+            // 모듈레이션
+            voice.set_modulation_depth(ch_state.modulation as f32 / 127.0);
+            // 필터
+            voice.set_filter(ch_state.cutoff as f32, ch_state.resonance as f32);
+            // 비브라토
+            voice.set_vibrato_depth(ch_state.vibrato_depth as f32);
+            // 비브라토 레이트 (CC77: 0~127 -> 0.1~8Hz 정도)
+            let vib_rate = 0.5 + (ch_state.vibrato_rate as f32 / 127.0) * 7.5;
+            voice.set_vibrato_rate(vib_rate);
+            // 피치벤드
+            let bend = ch_state.pitch_bend as f32;
+            voice.apply_pitch_bend(bend - 8192.0, ch_state.pitch_bend_range as f32);
+        }
+
+        self.active_notes.insert(lookup, vidx);
+        Ok(())
+    }
+
+    /// 노트 오프
+    pub fn note_off(&mut self, channel: u32, key: u32) -> Result<(), String> {
+        let ch = channel as usize;
+        if ch >= 16 {
+            return Err(format!("invalid channel {}", channel));
+        }
+        let lookup = (ch as u8, key as u8);
+
+        // sustain pedal down 이면 즉시 release 하지 않고 held_notes로 이동
+        if self.channels[ch].sustain_pedal || self.channels[ch].sostenuto {
+            if let Some(&vidx) = self.active_notes.get(&lookup) {
+                self.held_notes.insert(lookup, vidx);
+            }
+            return Ok(());
+        }
+
+        if let Some(&vidx) = self.active_notes.get(&lookup) {
+            if let Some(v) = self.voice_manager.voices.get_mut(vidx) {
+                v.release();
+            }
+            self.active_notes.remove(&lookup);
+        }
+        Ok(())
+    }
+
+    /// 컨트롤 체인지
+    pub fn cc(&mut self, channel: u32, control: u32, value: u32) -> Result<(), String> {
+        let ch = channel as usize;
+        if ch >= 16 {
+            return Err(format!("invalid channel {}", channel));
+        }
+        let ctrl = control as u8;
+        let val = value as u8;
+        let ch_state = &mut self.channels[ch];
+
+        match ctrl {
+            0 => ch_state.bank_msb = val,
+            1 => {
+                ch_state.modulation = val;
+                // 활성 보이스에 모듈레이션 깊이 적용
+                let depth = val as f32 / 127.0;
+                let v_man = &mut self.voice_manager;
+                for v in v_man.voices.iter_mut() {
+                    if v.channel as usize == ch && v.state != VoiceState::Off {
+                        v.set_modulation_depth(depth);
+                    }
+                }
+            }
+            7 => ch_state.volume = val,
+            10 => ch_state.pan = val,
+            11 => ch_state.expression = val,
+            32 => ch_state.bank_lsb = val,
+            64 => ch_state.sustain_pedal = val >= 64,
+            66 => {
+                let new_state = val >= 64;
+                ch_state.sostenuto = new_state;
+                if !new_state {
+                    // sostenuto off -> held 노트 release
+                    let held = std::mem::take(&mut self.held_notes);
+                    for ((c, k), vidx) in held {
+                        if c as usize == ch {
+                            if let Some(v) = self.voice_manager.voices.get_mut(vidx) {
+                                v.release();
+                            }
+                            self.active_notes.remove(&(c, k));
+                        } else {
+                            // 다른 채널이므로 다시 held에 넣기
+                            self.held_notes.insert((c, k), vidx);
+                        }
+                    }
+                }
+            }
+            67 => ch_state.soft_pedal = val >= 64,
+            69 => ch_state.hold2 = val >= 64,
+            71 => {
+                ch_state.resonance = val;
+                let cutoff = ch_state.cutoff as f32;
+                let resonance = val as f32;
+                let v_man = &mut self.voice_manager;
+                for v in v_man.voices.iter_mut() {
+                    if v.channel as usize == ch && v.state != VoiceState::Off {
+                        v.set_filter(cutoff, resonance);
+                    }
+                }
+            }
+            72 => ch_state.brightness = val,
+            73 => {
+                ch_state.attack_time = val;
+                // 어택 타임 변경 시 미래 노트부터 적용 (활성 보이스에는 적용 안 함)
+            }
+            74 => {
+                ch_state.cutoff = val;
+                let cutoff = val as f32;
+                let resonance = ch_state.resonance as f32;
+                let v_man = &mut self.voice_manager;
+                for v in v_man.voices.iter_mut() {
+                    if v.channel as usize == ch && v.state != VoiceState::Off {
+                        v.set_filter(cutoff, resonance);
+                    }
+                }
+            }
+            75 => ch_state.decay_time = val,
+            76 => {
+                ch_state.vibrato_depth = val;
+                let d = val as f32;
+                let v_man = &mut self.voice_manager;
+                for v in v_man.voices.iter_mut() {
+                    if v.channel as usize == ch && v.state != VoiceState::Off {
+                        v.set_vibrato_depth(d);
+                    }
+                }
+            }
+            77 => {
+                ch_state.vibrato_rate = val;
+                let rate = 0.5 + (val as f32 / 127.0) * 7.5;
+                let v_man = &mut self.voice_manager;
+                for v in v_man.voices.iter_mut() {
+                    if v.channel as usize == ch && v.state != VoiceState::Off {
+                        v.set_vibrato_rate(rate);
+                    }
+                }
+            }
+            91 => ch_state.reverb_send = val,
+            92 => ch_state.tremolo_send = val,
+            93 => ch_state.chorus_send = val,
+            94 => ch_state.delay_send = val,
+            95 => ch_state.phaser_send = val,
+            96 => ch_state.celeste_send = val,
+            98 => ch_state.rpn_lsb = val,
+            99 => {
+                ch_state.nrpn_active = true;
+            }
+            100 => {
+                ch_state.rpn_lsb = val;
+                ch_state.nrpn_active = false;
+            }
+            101 => {
+                ch_state.rpn_msb = val;
+                ch_state.nrpn_active = false;
+            }
+            120 => {
+                // All Sound Off
+                let v_man = &mut self.voice_manager;
+                for v in v_man.voices.iter_mut() {
+                    if v.channel as usize == ch {
+                        v.release();
+                    }
+                }
+                self.active_notes.retain(|&(c, _), _| c as usize != ch);
+            }
+            121 => {
+                // Reset All Controllers
+                self.cc_reset(channel)?;
+            }
+            123 => {
+                // All Notes Off (release만, sustain pedal 무시)
+                let v_man = &mut self.voice_manager;
+                for v in v_man.voices.iter_mut() {
+                    if v.channel as usize == ch {
+                        v.release();
+                    }
+                }
+                self.active_notes.retain(|&(c, _), _| c as usize != ch);
+                self.held_notes.retain(|&(c, _), _| c as usize != ch);
+            }
+            6 => {
+                // Data Entry - RPN 0,0 (Pitch Bend Sensitivity)
+                if !ch_state.nrpn_active
+                    && ch_state.rpn_msb == 0
+                    && ch_state.rpn_lsb == 0
+                {
+                    ch_state.pitch_bend_range = val;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// 프로그램 체인지
+    pub fn program_change(&mut self, channel: u32, program: u32) -> Result<(), String> {
+        let ch = channel as usize;
+        if ch >= 16 {
+            return Err(format!("invalid channel {}", channel));
+        }
+        self.channels[ch].program = program as u8;
+        Ok(())
+    }
+
+    /// 피치벤드
+    pub fn pitch_bend(&mut self, channel: u32, value: u32) -> Result<(), String> {
+        let ch = channel as usize;
+        if ch >= 16 {
+            return Err(format!("invalid channel {}", channel));
+        }
+        let val = (value as i32).clamp(0, 16383) as u16;
+        self.channels[ch].pitch_bend = val;
+        // 활성 보이스에 피치벤드 적용
+        let bend = val as f32;
+        let range = self.channels[ch].pitch_bend_range as f32;
+        let v_man = &mut self.voice_manager;
+        for v in v_man.voices.iter_mut() {
+            if v.channel as usize == ch && v.state != VoiceState::Off {
+                v.apply_pitch_bend(bend - 8192.0, range);
+            }
+        }
+        Ok(())
+    }
+
+    /// 오디오 출력 (스테레오 1샘플)
+    pub fn write_samples(&mut self, output: &mut [f32; 2]) -> Result<(), String> {
+        self.render_sample(output, false)
+    }
+
+    /// 이펙트 포함 출력 (자체 DSP 이펙트 체인을 거친 출력)
+    pub fn write_samples_with_effects(&mut self, output: &mut [f32; 2]) -> Result<(), String> {
+        self.render_sample(output, true)
+    }
+
+    /// 내부 렌더 함수
+    fn render_sample(&mut self, output: &mut [f32; 2], use_effects: bool) -> Result<(), String> {
+        let mut dry_l = 0.0f32;
+        let mut dry_r = 0.0f32;
+        // 이펙트 별 누적 버퍼
+        let mut rev_l = 0.0f32;
+        let mut rev_r = 0.0f32;
+        let mut cho_l = 0.0f32;
+        let mut cho_r = 0.0f32;
+        let mut del_l = 0.0f32;
+        let mut del_r = 0.0f32;
+        let mut tre_l = 0.0f32;
+        let mut tre_r = 0.0f32;
+        let mut pha_l = 0.0f32;
+        let mut pha_r = 0.0f32;
+        let mut cel_l = 0.0f32;
+        let mut cel_r = 0.0f32;
+
+        // 보이스 순회
+        let voice_count = self.voice_manager.voices.len();
+        for i in 0..voice_count {
+            let v = &mut self.voice_manager.voices[i];
+            if v.state == VoiceState::Off {
+                continue;
+            }
+            let (mut l, mut r) = v.render_sample();
+            // 채널별 dry/이펙트 send 적용
+            let ch_idx = v.channel as usize;
+            if ch_idx >= 16 {
+                continue;
+            }
+            let ch_state = &self.channels[ch_idx];
+            let vol = ch_state.volume_normalized();
+            l *= vol;
+            r *= vol;
+            // dry는 pan 적용
+            let pan = ch_state.pan_normalized();
+            let (dl, dr) = apply_pan(l, r, pan);
+            dry_l += dl;
+            dry_r += dr;
+
+            if use_effects {
+                // reverb send
+                let rev_amt = ch_state.reverb_send as f32 / 127.0;
+                rev_l += dl * rev_amt;
+                rev_r += dr * rev_amt;
+                // chorus send
+                let cho_amt = ch_state.chorus_send as f32 / 127.0;
+                cho_l += dl * cho_amt;
+                cho_r += dr * cho_amt;
+                // delay send
+                let del_amt = ch_state.delay_send as f32 / 127.0;
+                del_l += dl * del_amt;
+                del_r += dr * del_amt;
+                // tremolo send
+                let tre_amt = ch_state.tremolo_send as f32 / 127.0;
+                tre_l += dl * tre_amt;
+                tre_r += dr * tre_amt;
+                // phaser send
+                let pha_amt = ch_state.phaser_send as f32 / 127.0;
+                pha_l += dl * pha_amt;
+                pha_r += dr * pha_amt;
+                // celeste send
+                let cel_amt = ch_state.celeste_send as f32 / 127.0;
+                cel_l += dl * cel_amt;
+                cel_r += dr * cel_amt;
+            }
+        }
+
+        // off된 voice 정리 (active_notes에서도 제거)
+        let mut to_remove = Vec::new();
+        for i in 0..self.voice_manager.voices.len() {
+            if self.voice_manager.voices[i].state == VoiceState::Off {
+                to_remove.push(i);
+            }
+        }
+        for i in to_remove {
+            self.active_notes.retain(|_, vidx| *vidx != i);
+        }
+
+        // 이펙트 처리
+        if use_effects {
+            // reverb
+            if self.effects.reverb_enabled && (rev_l.abs() > 0.0 || rev_r.abs() > 0.0) {
+                let (rl, rr) = self.effects.reverb.process_stereo(rev_l, rev_r);
+                dry_l += rl * self.effects.reverb_wet;
+                dry_r += rr * self.effects.reverb_wet;
+            }
+            // chorus
+            if self.effects.chorus_enabled && (cho_l.abs() > 0.0 || cho_r.abs() > 0.0) {
+                let (cl, cr) = self.effects.chorus.process_stereo(cho_l, cho_r);
+                dry_l += cl * self.effects.chorus_wet;
+                dry_r += cr * self.effects.chorus_wet;
+            }
+            // delay
+            if self.effects.delay_enabled && (del_l.abs() > 0.0 || del_r.abs() > 0.0) {
+                let (dl, dr) = self.effects.delay.process_stereo(del_l, del_r);
+                dry_l += dl * self.effects.delay_wet;
+                dry_r += dr * self.effects.delay_wet;
+            }
+            // tremolo (모노 진폭 변조)
+            if self.effects.tremolo_enabled && (tre_l.abs() > 0.0 || tre_r.abs() > 0.0) {
+                let m = self.effects.tremolo.process((tre_l + tre_r) * 0.5);
+                dry_l += m * 0.5;
+                dry_r += m * 0.5;
+            }
+            // phaser (모노 위상 변조)
+            if self.effects.phaser_enabled && (pha_l.abs() > 0.0 || pha_r.abs() > 0.0) {
+                let m = self.effects.phaser.process((pha_l + pha_r) * 0.5);
+                dry_l += m * 0.5;
+                dry_r += m * 0.5;
+            }
+            // celeste (디튠 합성)
+            if self.effects.celeste_enabled && (cel_l.abs() > 0.0 || cel_r.abs() > 0.0) {
+                let d = self.effects.celeste.process((cel_l + cel_r) * 0.5);
+                dry_l += d * 0.5;
+                dry_r += d * 0.5;
+            }
+        }
+
+        // 마스터 게인
+        output[0] = dry_l * self.gain;
+        output[1] = dry_r * self.gain;
+        Ok(())
+    }
+
+    /// 이펙트 설정 (호환성 - noop)
+    pub fn set_effect_level(&self, _reverb: u8, _chorus: u8) {}
+
+    /// 모든 이펙트 활성화 (mimi_core 호환)
+    pub fn enable_effect(&mut self, reverb: bool, chorus: bool, _phaser: bool) {
+        self.effects.reverb_enabled = reverb;
+        self.effects.chorus_enabled = chorus;
+    }
+
+    /// 모든 노트 끄기
+    pub fn all_notes_off(&mut self) {
+        for ch in 0u32..16 {
+            let _ = self.cc(ch, 123, 0);
+        }
+    }
+
+    /// 시스템 리셋
+    pub fn system_reset(&mut self) {
+        self.all_notes_off();
+        for ch in self.channels.iter_mut() {
+            ch.reset();
+        }
+        self.active_notes.clear();
+        self.held_notes.clear();
+    }
+
+    /// Bank select
+    pub fn bank_select(&mut self, channel: u32, bank: u32) -> Result<(), String> {
+        let ch = channel as usize;
+        if ch >= 16 {
+            return Err(format!("invalid channel {}", channel));
+        }
+        // bank 128 -> 드럼 채널
+        if bank == 128 {
+            self.channels[ch].is_drum = true;
+        } else {
+            self.channels[ch].is_drum = false;
+            self.channels[ch].bank_msb = (bank & 0x7F) as u8;
+        }
+        Ok(())
+    }
+
+    /// Pitch wheel sensitivity
+    pub fn pitch_wheel_sens(&mut self, channel: u32, value: u32) -> Result<(), String> {
+        let ch = channel as usize;
+        if ch >= 16 {
+            return Err(format!("invalid channel {}", channel));
+        }
+        self.channels[ch].pitch_bend_range = (value & 0xFF) as u8;
+        Ok(())
+    }
+
+    /// Tremolo 활성화
+    pub fn enable_tremolo(&mut self, enable: bool) {
+        self.effects.tremolo_enabled = enable;
+    }
+    /// Celeste 활성화
+    pub fn enable_celeste(&mut self, enable: bool) {
+        self.effects.celeste_enabled = enable;
+    }
+    /// Phaser 활성화
+    pub fn enable_phaser(&mut self, enable: bool) {
+        self.effects.phaser_enabled = enable;
+    }
+
+    /// Chorus 파라미터
+    pub fn set_chorus_params(&mut self, rate: f32, depth: f32, feedback: f32) {
+        self.effects.chorus.set_params(rate, depth, feedback);
+    }
+    /// Reverb 파라미터 (room: 0.0~1.0, damping: 0.0~1.0)
+    pub fn set_reverb_params(&mut self, room: f32, damping: f32) {
+        self.effects.reverb.set_params(room, damping);
+        self.effects.reverb_wet = 0.2 + room * 0.4;
+    }
+    /// Tremolo 파라미터
+    pub fn set_tremolo_params(&mut self, rate: f32, depth: f32) {
+        self.effects.tremolo.set_params(rate, depth);
+    }
+    /// Phaser 파라미터
+    pub fn set_phaser_params(&mut self, rate: f32, feedback: f32, depth: f32) {
+        self.effects.phaser.set_params(rate, depth, feedback);
+    }
+    /// Celeste detune
+    pub fn set_celeste_detune(&mut self, cents: f32) {
+        self.effects.celeste.set_detune(cents);
+    }
+    /// Delay 활성화
+    pub fn enable_delay(&mut self, enable: bool) {
+        self.effects.delay_enabled = enable;
+    }
+
+    /// 채널 리셋 (Reset All Controllers)
+    pub fn cc_reset(&mut self, channel: u32) -> Result<(), String> {
+        let ch = channel as usize;
+        if ch >= 16 {
+            return Err(format!("invalid channel {}", channel));
+        }
+        // bank, program, pitch_bend는 그대로 두고 CC만 리셋
+        let ch_state = &mut self.channels[ch];
+        ch_state.modulation = 0;
+        ch_state.volume = 100;
+        ch_state.pan = 64;
+        ch_state.expression = 127;
+        ch_state.cutoff = 127;
+        ch_state.resonance = 0;
+        ch_state.vibrato_depth = 0;
+        ch_state.vibrato_rate = 0;
+        ch_state.attack_time = 64;
+        ch_state.decay_time = 64;
+        ch_state.brightness = 64;
+        ch_state.reverb_send = 40;
+        ch_state.chorus_send = 0;
+        ch_state.delay_send = 0;
+        ch_state.tremolo_send = 0;
+        ch_state.phaser_send = 0;
+        ch_state.celeste_send = 0;
+        ch_state.sustain_pedal = false;
+        ch_state.sostenuto = false;
+        ch_state.soft_pedal = false;
+        ch_state.hold2 = false;
+        ch_state.pitch_bend = 8192;
+        ch_state.pitch_bend_range = 2;
+        ch_state.rpn_msb = 127;
+        ch_state.rpn_lsb = 127;
+        ch_state.nrpn_active = false;
+        Ok(())
+    }
+
+    /// 활성 보이스 수
+    pub fn active_voices(&self) -> usize {
+        self.voice_manager.active_count()
+    }
+}
+
+/// 패닝 적용 (-1.0: 왼쪽, 0.0: 중앙, 1.0: 오른쪽)
+fn apply_pan(l: f32, r: f32, pan: f32) -> (f32, f32) {
+    // 등가 패닝 (sqrt 곡선으로 에너지 보존)
+    let pan_norm = (pan + 1.0) * 0.5; // 0.0~1.0
+    let pan_l = (std::f32::consts::PI * 0.5 * (1.0 - pan_norm)).cos();
+    let pan_r = (std::f32::consts::PI * 0.5 * pan_norm).cos();
+    (l * pan_l, r * pan_r)
+}
+
+/// 채널의 bank/program/key/velocity로 적절한 sample + envelope 추출
+fn find_voice_params(
+    sf: &Sf2File,
+    ch_state: &ChannelState,
+    key: u8,
+    velocity: u8,
+) -> Option<(Sample, InstrumentZone, f32, f32, f32, f32, f32)> {
+    // bank 결정: 드럼은 128, 그 외는 bank_msb
+    let bank: u16 = if ch_state.is_drum { 128 } else { ch_state.bank_msb as u16 };
+    let program = ch_state.program as u16;
+
+    // preset 검색
+    let preset = sf
+        .presets
+        .iter()
+        .find(|p| p.bank == bank && p.preset_num == program)
+        .or_else(|| {
+            // 정확히 없으면 bank 0에서 찾기
+            sf.presets
+                .iter()
+                .find(|p| p.bank == 0 && p.preset_num == program)
+        })?;
+
+    // preset zone 중 key/vel 범위에 맞는 것 찾기
+    // global zone (instrument_index가 None인 zone) 제외
+    let preset_zone: &PresetZone = preset
+        .zones
+        .iter()
+        .filter(|z| z.instrument_index.is_some())
+        .find(|z| {
+            let (lo, hi) = z.key_range;
+            key >= lo && key <= hi && velocity >= z.velocity_range.0 && velocity <= z.velocity_range.1
+        })
+        .or_else(|| {
+            // 정확히 매치 안 되면 첫 번째 instrument zone
+            preset.zones.iter().find(|z| z.instrument_index.is_some())
+        })?;
+
+    // instrument 찾기
+    let inst_idx = preset_zone.instrument_index?;
+    let instrument = sf.instruments.get(inst_idx)?;
+
+    // instrument zone 중 key/vel 범위에 맞는 것 찾기
+    // global zone (sample_index가 None) 제외
+    let inst_zone = instrument
+        .zones
+        .iter()
+        .filter(|z| z.sample_index.is_some())
+        .find(|z| {
+            let (lo, hi) = z.key_range;
+            key >= lo && key <= hi && velocity >= z.velocity_range.0 && velocity <= z.velocity_range.1
+        })
+        .or_else(|| {
+            instrument.zones.iter().find(|z| z.sample_index.is_some())
+        })?;
+
+    // sample 찾기
+    let sample_idx = inst_zone.sample_index?;
+    let sample = sf.samples.get(sample_idx)?;
+
+    Some((
+        sample.clone(),
+        inst_zone.clone(),
+        inst_zone.attack,
+        inst_zone.decay,
+        inst_zone.sustain,
+        inst_zone.release,
+        inst_zone.attenuation,
+    ))
 }

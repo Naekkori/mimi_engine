@@ -98,6 +98,72 @@ pub struct InstrumentZone {
 }
 
 impl Sf2File {
+    /// OxiSynth SoundFont2에서 변환 (info만 필요할 때, smpl은 빈 Arc)
+    pub fn from_oxi_info(sf: &SoundFont2) -> Self {
+        Self {
+            name: sf.info.bank_name.clone(),
+            smpl_data: Arc::new(Vec::new()),
+            samples: Vec::new(),
+            instruments: Vec::new(),
+            presets: Vec::new(),
+        }
+    }
+
+    /// 파일 경로에서 바로 Sf2File 로딩 (vendored SF2 파서 + smpl 데이터 일체)
+    pub fn from_path(path: &str) -> Result<Self, String> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+
+        // sf2_oxi 파서로 메타데이터 로드
+        let mut file_for_meta = std::fs::File::open(path)
+            .map_err(|e| format!("Failed to open {}: {}", path, e))?;
+        let sf = SoundFont2::load(&mut file_for_meta)
+            .map_err(|e| format!("vendored SF2 parse failed: {:?}", e))?;
+
+        // sdta 청크의 smpl 위치/길이를 얻기 위해 raw 데이터 직접 로드
+        let raw = crate::sf2_oxi::RawSoundFontData::load(&mut file)
+            .map_err(|e| format!("raw SF2 load failed: {:?}", e))?;
+
+        let smpl_chunk = raw.sample_data.smpl;
+
+        // smpl 청크에서 i16 PCM 데이터 일괄 로드
+        let smpl_data = if let Some(smpl) = smpl_chunk {
+            file.seek(SeekFrom::Start(smpl.offset))
+                .map_err(|e| format!("seek smpl: {}", e))?;
+            let mut buf = vec![0u8; smpl.len as usize];
+            file.read_exact(&mut buf).map_err(|e| format!("read smpl: {}", e));
+
+            // 16-bit little-endian PCM -> Vec<i16>
+            let mut samples_i16: Vec<i16> = Vec::with_capacity(buf.len() / 2);
+            let mut i = 0;
+            while i + 2 <= buf.len() {
+                let s = i16::from_le_bytes([buf[i], buf[i + 1]]);
+                samples_i16.push(s);
+                i += 2;
+            }
+            Arc::new(samples_i16)
+        } else {
+            Arc::new(Vec::new())
+        };
+
+        // 메타데이터만 있는 Sf2File을 만든 뒤 from_oxi와 동일 로직으로
+        // 샘플/악기/프리셋을 모두 채워서 반환
+        let mut stub = Sf2File {
+            name: sf.info.bank_name.clone(),
+            smpl_data: Arc::new(Vec::new()),
+            samples: Vec::new(),
+            instruments: Vec::new(),
+            presets: Vec::new(),
+        };
+        let _ = &mut stub; // dummy use to keep mut binding
+
+        // from_oxi 내부 로직을 재사용하기 위해 임시로 SmplChunk + File 보유
+        // (from_oxi는 smpl_chunk와 file을 받아 smpl_data를 직접 읽는다)
+        Self::from_oxi(sf, smpl_chunk, &mut file)
+    }
+
     /// OxiSynth SoundFont2에서 변환
     pub fn from_oxi(sf: SoundFont2, smpl_chunk: Option<SampleChunk>, file: &mut std::fs::File) -> Result<Self, String> {
         use std::io::{Read, Seek};
@@ -163,13 +229,18 @@ impl Sf2File {
                                 default_decay = timecents_to_seconds(*v);
                             }
                             crate::sf2_oxi::GeneratorType::SustainVolEnv => {
-                                default_sustain = (*v as f32).clamp(0.0, 1000.0) / 1000.0;
+                                let s = (*v as f32).clamp(0.0, 1000.0) / 1000.0;
+                                default_sustain = (s * 0.6).max(0.1);
                             }
                             crate::sf2_oxi::GeneratorType::ReleaseVolEnv => {
-                                default_release = timecents_to_seconds(*v);
+                                // release: timecents -> seconds, 최대 0.3초로 cap (누적 방지)
+                                let r = timecents_to_seconds(*v);
+                                default_release = r.min(0.3).max(0.01);
                             }
                             crate::sf2_oxi::GeneratorType::InitialAttenuation => {
-                                default_attenuation = *v as f32;
+                                // attenuation: centibel, 너무 크면 음이 안 들리므로 -100cb ~ 0으로 cap
+                                let a = (*v as f32).clamp(-100.0, 0.0);
+                                default_attenuation = a;
                             }
                             _ => {}
                         }
@@ -207,13 +278,17 @@ impl Sf2File {
                                 decay = timecents_to_seconds(*v);
                             }
                             crate::sf2_oxi::GeneratorType::SustainVolEnv => {
-                                sustain = (*v as f32).clamp(0.0, 1000.0) / 1000.0;
+                                // sustain: 0~1000 (centi-percent) -> 0.0~1.0
+                                // 누적 방지를 위해 0.6으로 cap
+                                let s = (*v as f32).clamp(0.0, 1000.0) / 1000.0;
+                                sustain = (s * 0.6).max(0.1);
                             }
                             crate::sf2_oxi::GeneratorType::ReleaseVolEnv => {
                                 release = timecents_to_seconds(*v);
                             }
                             crate::sf2_oxi::GeneratorType::InitialAttenuation => {
-                                attenuation = *v as f32;
+                                let a = (*v as f32).clamp(-100.0, 0.0);
+                                attenuation = a;
                             }
                             _ => {}
                         }
