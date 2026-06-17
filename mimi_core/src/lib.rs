@@ -3,7 +3,8 @@
 mod sequencer;
 mod rhythm_engine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use fluidlite::{IsSettings, IsSamples, Settings, Synth};
+use hibiki::{HibikiSynth, HibikiSettings, HibikiLogger};
+use hibiki::log_level;
 use midly::TrackEventKind;
 pub use sequencer::{MidiEngineEvent, MidiFormat, MimiSequencer};
 pub use rhythm_engine::{Rhythm, RhythmEngine, MidiNote, BsChordEvent};
@@ -105,8 +106,7 @@ impl MimiEngineHandle {
 /// 오디오 콜백 스레드와 통신하며 시퀀싱 및 합성을 전담할 오디오 컨텍스트
 pub struct AudioPlaybackContext {
     sequencer: MimiSequencer,
-    synth_a: Synth,
-    synth_b: Synth,
+    synth: std::sync::Mutex<HibikiSynth>,
     command_rx: Receiver<MimiCommand>,
     ui_tx: Sender<MidiEngineEvent>,
     status: Arc<Mutex<MimiEngineStatus>>,
@@ -194,16 +194,16 @@ impl AudioPlaybackContext {
                     self.master_volume = vol.clamp(VOLUME_MIN, VOLUME_MAX);
                     // fluidlite gain: 0.0 ~ 10.0 범위, 100 -> 1.0 (기본값)으로 매핑
                     let gain = self.master_volume as f32 / 100.0 * 2.0;
-                    self.synth_a.set_gain(gain);
-                    self.synth_b.set_gain(gain);
+                    self.synth.lock().unwrap().set_gain(gain);
+                    self.synth.lock().unwrap().set_gain(gain);
                     self.status.lock().unwrap().volume = self.master_volume;
                 }
                 MimiCommand::Seek(tick) => {
                     self.all_notes_off();
                     
                     // 신디사이저 리셋
-                    let _ = self.synth_a.system_reset();
-                    let _ = self.synth_b.system_reset();
+                    let _ = self.synth.lock().unwrap().system_reset();
+                    let _ = self.synth.lock().unwrap().system_reset();
 
                     // 내부상태 초기화
                     self.bank_msb = [[0u8; 16]; 2];
@@ -354,7 +354,7 @@ impl AudioPlaybackContext {
 
                     // 추적 완료 후 최종 Preset 상태를 2개 신디사이저 포트에 각각 적용
                     for p in 0..2 {
-                        let synth = if p == 0 { &mut self.synth_a } else { &mut self.synth_b };
+                        let synth = self.synth.lock().unwrap();
                         for ch in 0..16 {
                             let setup = &channel_presets[p][ch];
                             let is_drum = self.drum_channels[p][ch];
@@ -424,8 +424,8 @@ impl AudioPlaybackContext {
                     self.elapsed_time_sec = elapsed_sec;
                     // 볼륨 게인 재적용
                     let gain = self.master_volume as f32 / 100.0 * 2.0;
-                    self.synth_a.set_gain(gain);
-                    self.synth_b.set_gain(gain);
+                    self.synth.lock().unwrap().set_gain(gain);
+                    self.synth.lock().unwrap().set_gain(gain);
                 }
                 MimiCommand::LoadSong(bytes) => {
                     self.current_state = PlayerState::Stopped;
@@ -436,26 +436,25 @@ impl AudioPlaybackContext {
                     self.rhythm_mute_mask = 0;
 
                     // 1. 신디사이저 하드웨어 완벽 초기화 (이전 곡 잔재 제거)
-                    let _ = self.synth_a.system_reset();
-                    let _ = self.synth_b.system_reset();
+                    let _ = self.synth.lock().unwrap().system_reset();
 
                     // 모든 MIDI 채널에 기본 컨트롤 초기값 강제 적용 (Reset All Controllers & Default Volume)
-                    for synth in [&self.synth_a, &self.synth_b] {
-                        for ch in 0u32..16 {
-                            let _ = synth.cc(ch, 121, 0); // Reset All Controllers
-                            let _ = synth.cc(ch, 0, 0);   // Bank Select MSB
-                            let _ = synth.cc(ch, 32, 0);  // Bank Select LSB
-                            let _ = synth.program_change(ch, 0); // Default Grand Piano
-                            let _ = synth.cc(ch, 7, 100);  // Channel Volume Default
-                            let _ = synth.cc(ch, 11, 127); // Expression Default
-                            let _ = synth.cc(ch, 10, 64);  // Pan Default (Center)
-                            let _ = synth.pitch_bend(ch, 8192); // Pitch Bend Center
-                            // 이펙트 CC 기본값 설정 (리버브, 코러스, 딜레이)
-                            let _ = synth.cc(ch, 91, 40);  // Reverb Send Level
-                            let _ = synth.cc(ch, 93, 0);  // Chorus Send Level
-                            let _ = synth.cc(ch, 94, 0);  // Effect 4 (Delay/Variation)
-                        }
+                    let synth = self.synth.lock().unwrap();
+                    for ch in 0u32..16 {
+                        let _ = synth.cc(ch, 121, 0); // Reset All Controllers
+                        let _ = synth.cc(ch, 0, 0);   // Bank Select MSB
+                        let _ = synth.cc(ch, 32, 0);  // Bank Select LSB
+                        let _ = synth.program_change(ch, 0); // Default Grand Piano
+                        let _ = synth.cc(ch, 7, 100);  // Channel Volume Default
+                        let _ = synth.cc(ch, 11, 127); // Expression Default
+                        let _ = synth.cc(ch, 10, 64);  // Pan Default (Center)
+                        let _ = synth.pitch_bend(ch, 8192); // Pitch Bend Center
+                        // 이펙트 CC 기본값 설정 (리버브, 코러스, 딜레이)
+                        let _ = synth.cc(ch, 91, 40);  // Reverb Send Level
+                        let _ = synth.cc(ch, 93, 0);   // Chorus Send Level
+                        let _ = synth.cc(ch, 94, 0);   // Effect 4 (Delay/Variation)
                     }
+                    drop(synth);
 
                     // 내부상태 초기화
                     self.bank_msb = [[0u8; 16]; 2];
@@ -490,8 +489,8 @@ impl AudioPlaybackContext {
                     
                     // 신규 곡의 음량 게인 강제 재조정
                     let gain = self.master_volume as f32 / 100.0 * 2.0;
-                    self.synth_a.set_gain(gain);
-                    self.synth_b.set_gain(gain);
+                    self.synth.lock().unwrap().set_gain(gain);
+                    self.synth.lock().unwrap().set_gain(gain);
 
                     // 새로운 곡 주입 시 리듬 반주 틱 생성용 타임라인 구성
                     if self.rhythm_engine.current_rhythm != Rhythm::Original {
@@ -516,7 +515,7 @@ impl AudioPlaybackContext {
                     // 실시간으로 모든 이전 음 찌꺼기 끄기 (Note Stuck 방지)
                     // port 0, 1 전체 신디사이저 포트에 하드웨어 레벨 All Notes Off 및 All Sound Off
                     for port in 0..2 {
-                        let synth = if port == 0 { &self.synth_a } else { &self.synth_b };
+                        let synth = self.synth.lock().unwrap();
                         for ch in 0..16 {
                             let _ = synth.cc(ch as u32, 123, 0); // All Notes Off
                             let _ = synth.cc(ch as u32, 120, 0); // All Sound Off
@@ -549,9 +548,9 @@ impl AudioPlaybackContext {
     fn all_notes_off(&mut self) {
         for (port,ch,note) in self.active_notes.drain(..) {
             if port == 0{
-                let _ = self.synth_a.note_off(ch as u32, note as u32);
+                let _ = self.synth.lock().unwrap().note_off(ch as u32, note as u32);
             }else{
-                let _ = self.synth_b.note_off(ch as u32, note as u32);
+                let _ = self.synth.lock().unwrap().note_off(ch as u32, note as u32);
             }
         }
     }
@@ -666,7 +665,7 @@ impl AudioPlaybackContext {
 
         // 역추적한 프리셋들을 실제 신디사이저에 동기화
         for p in 0..2 {
-            let synth = if p == 0 { &mut self.synth_a } else { &mut self.synth_b };
+            let synth = self.synth.lock().unwrap();
             for ch in 0..16 {
                 let setup = &channel_presets[p][ch];
                 let is_drum = self.drum_channels[p][ch];
@@ -747,8 +746,8 @@ impl AudioPlaybackContext {
             for event in ready_events {
                 match event.inner {
                     MidiEngineEvent::MidiReset => {
-                        let _ = self.synth_a.system_reset();
-                        let _ = self.synth_b.system_reset();
+                        let _ = self.synth.lock().unwrap().system_reset();
+                        let _ = self.synth.lock().unwrap().system_reset();
 
                         self.midi_format = self.sequencer.format;
                         self.bank_msb = [[0u8; 16]; 2];
@@ -762,29 +761,29 @@ impl AudioPlaybackContext {
                         self.nrpn_active = [[false; 16]; 2];
 
                         for ch in 0u32..16{
-                            let _ = self.synth_a.cc(ch, 0, 0);
-                            let _ = self.synth_a.cc(ch, 32, 0);
-                            let _ = self.synth_a.program_change(ch, 0);
-                            let _ = self.synth_a.cc(ch, 7, 100);
-                            let _ = self.synth_a.cc(ch, 11, 127);
-                            let _ = self.synth_a.cc(ch, 10, 64);
-                            let _ = self.synth_a.pitch_bend(ch, 8192);
+                            let _ = self.synth.lock().unwrap().cc(ch, 0, 0);
+                            let _ = self.synth.lock().unwrap().cc(ch, 32, 0);
+                            let _ = self.synth.lock().unwrap().program_change(ch, 0);
+                            let _ = self.synth.lock().unwrap().cc(ch, 7, 100);
+                            let _ = self.synth.lock().unwrap().cc(ch, 11, 127);
+                            let _ = self.synth.lock().unwrap().cc(ch, 10, 64);
+                            let _ = self.synth.lock().unwrap().pitch_bend(ch, 8192);
                             // 이펙트 CC 기본값 설정 (리버브, 코러스, 딜레이)
-                            let _ = self.synth_a.cc(ch, 91, 40);  // Reverb Send Level (0-127)
-                            let _ = self.synth_a.cc(ch, 93, 0);  // Chorus Send Level
-                            let _ = self.synth_a.cc(ch, 94, 0);  // Effect 4 (Delay/Variation)
+                            let _ = self.synth.lock().unwrap().cc(ch, 91, 40);  // Reverb Send Level (0-127)
+                            let _ = self.synth.lock().unwrap().cc(ch, 93, 0);  // Chorus Send Level
+                            let _ = self.synth.lock().unwrap().cc(ch, 94, 0);  // Effect 4 (Delay/Variation)
 
-                            let _ = self.synth_b.cc(ch, 0, 0);
-                            let _ = self.synth_b.cc(ch, 32, 0);
-                            let _ = self.synth_b.program_change(ch, 0);
-                            let _ = self.synth_b.cc(ch, 7, 100);
-                            let _ = self.synth_b.cc(ch, 11, 127);
-                            let _ = self.synth_b.cc(ch, 10, 64);
-                            let _ = self.synth_b.pitch_bend(ch, 8192);
+                            let _ = self.synth.lock().unwrap().cc(ch, 0, 0);
+                            let _ = self.synth.lock().unwrap().cc(ch, 32, 0);
+                            let _ = self.synth.lock().unwrap().program_change(ch, 0);
+                            let _ = self.synth.lock().unwrap().cc(ch, 7, 100);
+                            let _ = self.synth.lock().unwrap().cc(ch, 11, 127);
+                            let _ = self.synth.lock().unwrap().cc(ch, 10, 64);
+                            let _ = self.synth.lock().unwrap().pitch_bend(ch, 8192);
                             // 이펙트 CC 기본값 설정
-                            let _ = self.synth_b.cc(ch, 91, 40);
-                            let _ = self.synth_b.cc(ch, 93, 40);
-                            let _ = self.synth_b.cc(ch, 94, 40);
+                            let _ = self.synth.lock().unwrap().cc(ch, 91, 40);
+                            let _ = self.synth.lock().unwrap().cc(ch, 93, 40);
+                            let _ = self.synth.lock().unwrap().cc(ch, 94, 40);
                         }
                     }
                     MidiEngineEvent::MidiPlay {
@@ -816,7 +815,7 @@ impl AudioPlaybackContext {
                         let is_drum_ch = self.drum_channels[synth_port][channel as usize];
                         let target_channel = channel as u32;
                         // 포트에 해당되는 synth 지정
-                        let synth = if synth_port == 0 { &self.synth_a } else { &self.synth_b };
+                        let synth = self.synth.lock().unwrap();
 
                         if let midly::TrackEventKind::Midi { message, .. } = kind {
                             match message {
@@ -990,7 +989,7 @@ impl AudioPlaybackContext {
                             
                             // 실시간으로 이전 음 찌꺼기 끄기 (Note Stuck 방지)
                             for port in 0..2 {
-                                let synth = if port == 0 { &self.synth_a } else { &self.synth_b };
+                                let synth = self.synth.lock().unwrap();
                                 for ch in 0..16 {
                                     let _ = synth.cc(ch as u32, 123, 0); // All Notes Off
                                     let _ = synth.cc(ch as u32, 120, 0); // All Sound Off
@@ -1060,7 +1059,7 @@ impl AudioPlaybackContext {
                         if note.velocity > 0 {
                             // 같은 채널에서 동일한 음정이 미처 꺼지지 않고 다시 켜지는 경우(NoteOn)
                             // 하드웨어 레벨에서 먼저 강제 NoteOff 처리를 해 주어 잔향 중첩과 스택 과부하를 원천 방지한다
-                            let _ = self.synth_b.note_off(target_channel, final_key as u32);
+                            let _ = self.synth.lock().unwrap().note_off(target_channel, final_key as u32);
                             self.active_notes.retain(|&(p, ch, n)| {
                                 !(p == 1 && ch == target_channel as u8 && n == final_key)
                             });
@@ -1078,27 +1077,27 @@ impl AudioPlaybackContext {
                                     }
                                 }) {
                                     if is_drum {
-                                        let _ = self.synth_b.bank_select(target_channel, 128);
+                                        let _ = self.synth.lock().unwrap().bank_select(target_channel, 128);
                                     } else {
-                                        let _ = self.synth_b.bank_select(target_channel, 0);
+                                        let _ = self.synth.lock().unwrap().bank_select(target_channel, 0);
                                     }
-                                    let _ = self.synth_b.program_change(target_channel, track.instrument_program as u32);
+                                    let _ = self.synth.lock().unwrap().program_change(target_channel, track.instrument_program as u32);
 
                                     // 원곡 CC가 내장 리듬의 볼륨/정렬 등을 난도질하지 못하도록 기본 제어값 실시간 강제 고정 락인!
-                                    let _ = self.synth_b.cc(target_channel, 7, 100);  // 채널 볼륨 100 고정 강경 탑재
-                                    let _ = self.synth_b.cc(target_channel, 11, 127); // Expression 127 고정
-                                    let _ = self.synth_b.cc(target_channel, 10, 64);  // Pan Center 고정
+                                    let _ = self.synth.lock().unwrap().cc(target_channel, 7, 100);  // 채널 볼륨 100 고정 강경 탑재
+                                    let _ = self.synth.lock().unwrap().cc(target_channel, 11, 127); // Expression 127 고정
+                                    let _ = self.synth.lock().unwrap().cc(target_channel, 10, 64);  // Pan Center 고정
                                 }
                             }
 
                             // 리듬 노트 발송
-                            let _ = self.synth_b.note_on(target_channel, final_key as u32, note.velocity as u32);
+                            let _ = self.synth.lock().unwrap().note_on(target_channel, final_key as u32, note.velocity as u32);
                         } else {
                             // Note-Off (velocity = 0) 처리
                             self.active_notes.retain(|&(p, ch, n)| {
                                 !(p == 1 && ch == target_channel as u8 && n == final_key)
                             });
-                            let _ = self.synth_b.note_off(target_channel, final_key as u32);
+                            let _ = self.synth.lock().unwrap().note_off(target_channel, final_key as u32);
                         }
 
                         self.next_rhythm_note_index += 1;
@@ -1109,14 +1108,12 @@ impl AudioPlaybackContext {
             }
 
             // 4. 오디오 합성
-            let mut temp_a = [0.0f32; 2];
-            let mut temp_b = [0.0f32; 2];
+            let mut temp = [0.0f32; 2];
 
-            let _ = temp_a.write_samples(&self.synth_a);
-            let _ = temp_b.write_samples(&self.synth_b);
+            let _ = self.synth.lock().unwrap().write_samples(&mut temp);
 
-            output_buffer[sample_idx] = temp_a[0] + temp_b[0];      //L
-            output_buffer[sample_idx + 1] = temp_a[1] + temp_b[1];  //R
+            output_buffer[sample_idx] = temp[0];      //L
+            output_buffer[sample_idx + 1] = temp[1];  //R
 
             sample_idx += 2;
 
@@ -1191,20 +1188,20 @@ pub fn create_mimi_engine(
     let (command_tx, command_rx) = unbounded::<MimiCommand>();
     let (ui_tx, ui_rx) = unbounded::<MidiEngineEvent>();
 
-    // fluidlite 합성기의 콘솔/stderr 로깅 비활성화 (TUI 화면 깨짐 방지) 및 커스텀 로거 지정
+    // Hibiki 엔진 로깅 설정 (TUI 화면 깨짐 방지)
     let ui_tx_log = ui_tx.clone();
-    let l_handler = fluidlite::FnLogger::new(move |_lvl, msg| {
+    let l_handler = HibikiLogger::new(move |_lvl, msg| {
         let _ = ui_tx_log.send(MidiEngineEvent::FluidsynthWarning {
             message: msg.to_string(),
         });
     });
-    fluidlite::Log::set(
+    hibiki::set_log_levels(
         &[
-            fluidlite::LogLevel::Panic,
-            fluidlite::LogLevel::Error,
-            fluidlite::LogLevel::Warning,
-            fluidlite::LogLevel::Info,
-            fluidlite::LogLevel::Debug,
+            log_level::PANIC,
+            log_level::ERROR,
+            log_level::WARNING,
+            log_level::INFO,
+            log_level::DEBUG,
         ],
         l_handler,
     );
@@ -1226,77 +1223,33 @@ pub fn create_mimi_engine(
     }));
     let status_clone = Arc::clone(&player_status);
 
-    on_progress(0.15, "Init Synth A...");
+    on_progress(0.15, "Init Synth...");
 
-    // fluidlite 합성기 설정 (Synth A & B)
-    let settings_a = Settings::new()
+    // Hibiki 합성기 설정
+    let mut settings = HibikiSettings::new();
+    settings.set_sample_rate(sample_rate);
+
+    let synth = HibikiSynth::new(settings)
         .map_err(|e| {
-            let msg = format!("FluidLite Settings A creation failed: {:?}", e);
+            let msg = format!("Hibiki Synth creation failed: {}", e);
             let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
             anyhow::anyhow!(msg)
         })?;
 
-    if let Some(sr_setting) = settings_a.num("synth.sample-rate") {
-        sr_setting.set(sample_rate);
-    }
-
-    let synth_a = Synth::new(settings_a)
-        .map_err(|e| {
-            let msg = format!("FluidLite Synth A creation failed: {:?}", e);
-            let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
-            anyhow::anyhow!(msg)
-        })?;
-
-    on_progress(0.20, "Load Soundfont A...");
-    if let Err(e) = synth_a.sfload(sf_path, true) {
-        let msg = format!("Load Soundfont A Failed: {:?}", e);
+    on_progress(0.20, "Load Soundfont...");
+    if let Err(e) = synth.sfload(sf_path, true) {
+        let msg = format!("Load Soundfont Failed: {}", e);
         let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
         return Err(anyhow::anyhow!(msg));
     }
 
-    synth_a.set_gain(1.0);
+    synth.set_gain(1.0);
 
     // 이펙트 CC 기본값 설정 (리버브, 코러스, 딜레이)
     for ch in 0u32..16 {
-        let _ = synth_a.cc(ch, 91, 40);  // Reverb Send Level
-        let _ = synth_a.cc(ch, 93, 0);   // Chorus Send Level
-        let _ = synth_a.cc(ch, 94, 0);   // Effect 4 (Delay/Variation)
-    }
-
-    on_progress(0.50, "Init Synth B...");
-
-    let settings_b = Settings::new()
-        .map_err(|e| {
-            let msg = format!("FluidLite Settings B creation failed: {:?}", e);
-            let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
-            anyhow::anyhow!(msg)
-        })?;
-
-    if let Some(sr_setting) = settings_b.num("synth.sample-rate") {
-        sr_setting.set(sample_rate);
-    }
-
-    let synth_b = Synth::new(settings_b)
-        .map_err(|e| {
-            let msg = format!("FluidLite Synth B creation failed: {:?}", e);
-            let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
-            anyhow::anyhow!(msg)
-        })?;
-
-    on_progress(0.55, "Load Soundfont B...");
-    if let Err(e) = synth_b.sfload(sf_path, true) {
-        let msg = format!("Load Soundfont B Failed: {:?}", e);
-        let _ = ui_tx.send(MidiEngineEvent::FluidsynthWarning { message: msg.clone() });
-        return Err(anyhow::anyhow!(msg));
-    }
-
-    synth_b.set_gain(1.0);
-
-    // 이펙트 CC 기본값 설정
-    for ch in 0u32..16 {
-        let _ = synth_b.cc(ch, 91, 40);  // Reverb Send Level
-        let _ = synth_b.cc(ch, 93, 0);   // Chorus Send Level
-        let _ = synth_b.cc(ch, 94, 0);   // Effect 4 (Delay/Variation)
+        let _ = synth.cc(ch, 91, 40);  // Reverb Send Level
+        let _ = synth.cc(ch, 93, 0);   // Chorus Send Level
+        let _ = synth.cc(ch, 94, 0);   // Effect 4 (Delay/Variation)
     }
 
     on_progress(0.85, "Init Sequencer...");
@@ -1310,8 +1263,7 @@ pub fn create_mimi_engine(
 
     let playback_context = AudioPlaybackContext {
         sequencer,
-        synth_a,
-        synth_b,
+        synth: std::sync::Mutex::new(synth),
         command_rx,
         ui_tx: ui_tx.clone(),
         status: status_clone,

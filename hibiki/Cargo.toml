@@ -1,0 +1,8 @@
+[package]
+name = "hibiki"
+version = "0.1.0"
+authors = ["Naekkori"]
+license = "MIT"
+edition = "2024"
+
+[dependencies]
