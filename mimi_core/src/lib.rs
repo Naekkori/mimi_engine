@@ -402,6 +402,11 @@ impl AudioPlaybackContext {
                             if let Some(pb) = setup.pitch_bend {
                                 let _ = synth.pitch_bend(ch as u32, pb as u32);
                             }
+
+                            // 6. 이펙트 CC 기본값 설정 (미디 파일에 없을 경우를 대비)
+                            let _ = synth.cc(ch as u32, 91, 40);  // Reverb Send Level
+                            let _ = synth.cc(ch as u32, 93, 0);   // Chorus Send Level
+                            let _ = synth.cc(ch as u32, 94, 0);   // Effect 4 (Delay/Variation)
                         }
                     }
                     
@@ -445,6 +450,10 @@ impl AudioPlaybackContext {
                             let _ = synth.cc(ch, 11, 127); // Expression Default
                             let _ = synth.cc(ch, 10, 64);  // Pan Default (Center)
                             let _ = synth.pitch_bend(ch, 8192); // Pitch Bend Center
+                            // 이펙트 CC 기본값 설정 (리버브, 코러스, 딜레이)
+                            let _ = synth.cc(ch, 91, 40);  // Reverb Send Level
+                            let _ = synth.cc(ch, 93, 0);  // Chorus Send Level
+                            let _ = synth.cc(ch, 94, 0);  // Effect 4 (Delay/Variation)
                         }
                     }
 
@@ -760,6 +769,10 @@ impl AudioPlaybackContext {
                             let _ = self.synth_a.cc(ch, 11, 127);
                             let _ = self.synth_a.cc(ch, 10, 64);
                             let _ = self.synth_a.pitch_bend(ch, 8192);
+                            // 이펙트 CC 기본값 설정 (리버브, 코러스, 딜레이)
+                            let _ = self.synth_a.cc(ch, 91, 40);  // Reverb Send Level (0-127)
+                            let _ = self.synth_a.cc(ch, 93, 0);  // Chorus Send Level
+                            let _ = self.synth_a.cc(ch, 94, 0);  // Effect 4 (Delay/Variation)
 
                             let _ = self.synth_b.cc(ch, 0, 0);
                             let _ = self.synth_b.cc(ch, 32, 0);
@@ -768,6 +781,10 @@ impl AudioPlaybackContext {
                             let _ = self.synth_b.cc(ch, 11, 127);
                             let _ = self.synth_b.cc(ch, 10, 64);
                             let _ = self.synth_b.pitch_bend(ch, 8192);
+                            // 이펙트 CC 기본값 설정
+                            let _ = self.synth_b.cc(ch, 91, 40);
+                            let _ = self.synth_b.cc(ch, 93, 40);
+                            let _ = self.synth_b.cc(ch, 94, 40);
                         }
                     }
                     MidiEngineEvent::MidiPlay {
@@ -1239,6 +1256,13 @@ pub fn create_mimi_engine(
 
     synth_a.set_gain(1.0);
 
+    // 이펙트 CC 기본값 설정 (리버브, 코러스, 딜레이)
+    for ch in 0u32..16 {
+        let _ = synth_a.cc(ch, 91, 40);  // Reverb Send Level
+        let _ = synth_a.cc(ch, 93, 0);   // Chorus Send Level
+        let _ = synth_a.cc(ch, 94, 0);   // Effect 4 (Delay/Variation)
+    }
+
     on_progress(0.50, "Init Synth B...");
 
     let settings_b = Settings::new()
@@ -1267,6 +1291,13 @@ pub fn create_mimi_engine(
     }
 
     synth_b.set_gain(1.0);
+
+    // 이펙트 CC 기본값 설정
+    for ch in 0u32..16 {
+        let _ = synth_b.cc(ch, 91, 40);  // Reverb Send Level
+        let _ = synth_b.cc(ch, 93, 0);   // Chorus Send Level
+        let _ = synth_b.cc(ch, 94, 0);   // Effect 4 (Delay/Variation)
+    }
 
     on_progress(0.85, "Init Sequencer...");
 
