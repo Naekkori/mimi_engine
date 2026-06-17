@@ -1,9 +1,15 @@
 // hibiki.rs - Hibiki 사운드폰트 엔진
 // 자체 사운드폰트 렌더링 엔진
 
-pub mod sf2;
+pub mod sf2_oxi;
 pub mod voice;
 pub mod dsp;
+
+// sf2 별칭 (호환성)
+pub mod sf2 {
+    pub use crate::sf2_oxi::*;
+    pub use crate::sf2_oxi::adapter::{Sf2File, Sample, Preset, Instrument, PresetZone, InstrumentZone, SampleType};
+}
 
 // Hibiki 엔진 설정
 pub struct HibikiSettings {
@@ -182,9 +188,14 @@ impl HibikiSynth {
         let mut file = std::fs::File::open(path)
             .map_err(|e| format!("Failed to open file: {}", e))?;
 
-        // SF2 파싱
-        let sf2_file = sf2::Sf2Parser::parse(&mut file)
+        // OxiSynth SoundFont2로 파싱
+        let sf2 = sf2::SoundFont2::load(&mut file)
             .map_err(|e| format!("Failed to parse SF2: {:?}", e))?;
+
+        // smpl 데이터는 별도 file에서 읽기 (SampleChunk의 offset)
+        let smpl_chunk = sf2.sample_data.smpl;
+        let sf2_file = sf2::adapter::Sf2File::from_oxi(sf2, smpl_chunk, &mut file)
+            .map_err(|e| format!("Failed to convert: {}", e))?;
 
         // 프리셋 개수 반환
         let preset_count = sf2_file.presets.len() as u32;
@@ -276,10 +287,21 @@ impl HibikiSynth {
                             }
                             let sample = &sf.samples[sample_idx];
 
-                            // 보이스 트리거
+                            // 보이스 트리거 (SF2 envelope 적용)
                             let mut vm = self.voice_manager.write().unwrap();
                             if let Some(voice) = vm.find_free_voice() {
-                                voice.trigger(sample, sf.smpl_data.clone(), note, velocity, self.sample_rate as f32);
+                                voice.trigger(
+                                    sample,
+                                    sf.smpl_data.clone(),
+                                    note,
+                                    velocity,
+                                    self.sample_rate as f32,
+                                    inst_zone.attack,
+                                    inst_zone.decay,
+                                    inst_zone.sustain,
+                                    inst_zone.release,
+                                    inst_zone.attenuation,
+                                );
 
                                 // 채널 설정 적용
                                 voice.pan = ch_state.pan as f32 / 127.0;

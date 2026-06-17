@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::sf2::Sample;
+use crate::sf2_oxi::adapter::Sample;
 use crate::dsp::{BiquadFilter, LFO};
 
 /// 보이스 상태
@@ -25,8 +25,8 @@ pub enum VoiceState {
 pub struct Voice {
     /// 보이스 상태
     pub state: VoiceState,
-    /// 현재 샘플 인덱스 (샘플 내에서의 상대 위치, 0 ~ sample_len)
-    position: f64,
+    /// 현재 샘플 인덱스 (샘플 내에서의 상대 위치, 0 ~ sample_len, f32 사용으로 CPU 절약)
+    position: f32,
     /// 샘플 데이터 (Arc로 공유)
     sample_data: Option<Arc<Vec<i16>>>,
     /// 샘플 시작 오프셋 (샘플 내에서의 시작 위치)
@@ -43,7 +43,7 @@ pub struct Voice {
     pitch_ratio: f32,
     /// 기본 피치 배율
     base_pitch_ratio: f32,
-    /// 파나소니 (0.0 = 왼쪽, 0.5 = 중앙, 1.0 = 오른쪽)
+    /// 팬팬 (0.0 = 왼쪽, 0.5 = 중앙, 1.0 = 오른쪽)
     pub pan: f32,
     /// 볼륨
     volume: f32,
@@ -59,6 +59,12 @@ pub struct Voice {
     vib_lfo: LFO,
     /// 모듈레이션 깊이
     mod_depth: f32,
+    /// 첫 샘플 값 (팝 노이즈 방지용)
+    first_sample: f32,
+    /// 마지막 출력 값 (release 시 fade-out)
+    last_output: f32,
+    /// 보이스가 릴리즈된 후 경과 샘플 수 (fade-out용)
+    release_counter: u32,
 }
 
 impl Voice {
@@ -83,6 +89,9 @@ impl Voice {
             mod_lfo: LFO::new(44100.0),
             vib_lfo: LFO::new(44100.0),
             mod_depth: 0.0,
+            first_sample: 0.0,
+            last_output: 0.0,
+            release_counter: 0,
         }
     }
 
@@ -94,14 +103,32 @@ impl Voice {
         note: u8,
         velocity: u8,
         sample_rate: f32,
+        attack: f32,
+        decay: f32,
+        sustain: f32,
+        release: f32,
+        attenuation: f32,
     ) {
+        // 첫 샘플 값 미리 계산 (팝 노이즈 방지용)
+        let first_sample_val = if smpl_data.is_empty() {
+            0.0
+        } else {
+            smpl_data[sample.start as usize] as f32 / 32768.0
+        };
+
         self.sample_data = Some(smpl_data);
         self.start_offset = sample.start;
         self.sample_len = sample.end.saturating_sub(sample.start);
         // 루프 포인트는 샘플 내에서의 상대 위치
         self.loop_start = sample.start_loop.saturating_sub(sample.start);
         self.loop_end = sample.end_loop.saturating_sub(sample.start);
-        self.loop_mode = 0; // 기본: 루프 Continuous
+        // 루프가 있으면 Continuous, 없으면 NoLoop
+        // SF2 spec: loop mode 1 = Continuous (until release)
+        if self.loop_end > self.loop_start && self.loop_end <= self.sample_len {
+            self.loop_mode = 1; // Continuous loop
+        } else {
+            self.loop_mode = 0; // No loop
+        }
         self.sample_rate = sample_rate;
 
         // 필터 초기화
@@ -127,13 +154,29 @@ impl Voice {
         // 볼륨 (velocity 기반)
         self.volume = (velocity as f32 / 127.0).clamp(0.0, 1.0);
 
-        // ADSR 초기화 (기본값: 빠른 attack, sustain 1.0, 빠른 release)
-        self.adsr.set_params(0.005, 0.05, 1.0, 0.05);
+        // ADSR 초기화 (SF2 envelope generator 값 적용)
+        // - attack, decay, release: seconds (timecents 변환됨)
+        // - sustain: 0.0~1.0
+        // - attenuation: centibel (dB) - 음량 감소
+        let sustain = sustain.clamp(0.0, 1.0);
+        // attenuation을 볼륨 게인에 반영 (0.1 = 1dB, 100 = 10dB, 1.0 = 0dB)
+        // attenuation 0 = 1.0, 100 = 0.1
+        let atten_gain = 10f32.powf(-attenuation / 200.0);
+        self.volume *= atten_gain;
+        self.adsr.set_params(attack.max(0.001), decay.max(0.001), sustain, release.max(0.001));
         self.adsr.trigger();
         self.state = VoiceState::Attack;
 
         self.position = 0.0;
         self.mod_depth = 0.0;
+
+        // 첫 샘플 값 기록 (팝 노이즈 방지용)
+        self.first_sample = first_sample_val;
+        self.last_output = 0.0;
+        self.release_counter = 0;
+
+        // 필터 리셋 (이전 보이스의 state 제거)
+        self.filter.reset();
     }
 
     /// 볼륨 설정
@@ -187,6 +230,7 @@ impl Voice {
         if self.state != VoiceState::Off {
             self.adsr.start_release();
             self.state = VoiceState::Release;
+            self.release_counter = 0;
         }
     }
 
@@ -229,18 +273,46 @@ impl Voice {
         // 피치 변조 적용
         let modulated_pitch = self.pitch_ratio * (1.0 + mod_lfo_val * 0.1 + vib_lfo_val);
 
-        // 샘플 가져오기
-        let sample_val = self.interpolate_sample_with_pitch(sample_data, modulated_pitch as f64);
+        // 샘플 가져오기 (Linear interpolation: 빠름, cubic은 CPU 많이 먹음)
+        let sample_val = self.interpolate_sample_with_pitch(sample_data, modulated_pitch as f32);
 
         // 필터 적용 (LPF)
         let filtered = self.filter.process(sample_val);
 
         // ADSR 레벨 적용
         let level = self.adsr.get_level();
-        let output = filtered * level * self.volume;
+        let mut output = filtered * level * self.volume;
 
-        // 위치 업데이트 (원래 비율로)
-        self.position += self.pitch_ratio as f64;
+        // 팝 노이즈 방지: 샘플 시작 ramp-in
+        // 처음 64 샘플 동안 0에서 first_sample 값으로 부드럽게 전환
+        let samples_elapsed = self.position as u32;
+        if samples_elapsed < 64 {
+            // ramp gain: 0 -> 1 over 64 samples
+            let ramp_gain = samples_elapsed as f32 / 64.0;
+            // first_sample로 부드럽게 fade in
+            let fade_in = self.first_sample * (1.0 - ramp_gain);
+            output = output * ramp_gain + fade_in * level * self.volume * 0.5;
+        }
+
+        self.last_output = output;
+
+        // 위치 업데이트 (f32 사용으로 CPU 절약)
+        self.position += self.pitch_ratio;
+
+        // 팝 노이즈 방지: release 시 fade-out
+        if self.state == VoiceState::Release {
+            self.release_counter += 1;
+            let fade_samples = 256; // 약 5.8ms @ 44.1kHz
+            if self.release_counter < fade_samples {
+                let fade_gain = 1.0 - (self.release_counter as f32 / fade_samples as f32);
+                output *= fade_gain;
+            }
+        }
+
+        self.last_output = output;
+
+        // 위치 업데이트 (f32 사용으로 CPU 절약)
+        self.position += self.pitch_ratio;
 
         // 루프 또는 끝 처리
         if (self.position as u32) >= self.sample_len {
@@ -251,7 +323,7 @@ impl Voice {
                     if self.loop_end > self.loop_start {
                         let loop_len = self.loop_end - self.loop_start;
                         let rel_pos = (self.position as u32 - self.loop_start) % loop_len;
-                        self.position = self.loop_start as f64 + rel_pos as f64;
+                        self.position = self.loop_start as f32 + rel_pos as f32;
                     } else {
                         self.state = VoiceState::Off;
                     }
@@ -262,7 +334,7 @@ impl Voice {
                         if self.loop_end > self.loop_start {
                             let loop_len = self.loop_end - self.loop_start;
                             let rel_pos = (self.position as u32 - self.loop_start) % loop_len;
-                            self.position = self.loop_start as f64 + rel_pos as f64;
+                            self.position = self.loop_start as f32 + rel_pos as f32;
                         }
                     } else {
                         self.state = VoiceState::Off;
@@ -288,17 +360,17 @@ impl Voice {
     /// 선형 보간으로 샘플 가져오기
     fn interpolate_sample(&self) -> f32 {
         match &self.sample_data {
-            Some(d) => self.interpolate_sample_with_pitch(d, self.position),
+            Some(d) => self.interpolate_sample_with_pitch(d, self.position as f32),
             None => 0.0,
         }
     }
 
     /// 특정 피치로 샘플 보간 (샘플 내 상대 위치, smpl_data 전체 참조)
-    fn interpolate_sample_with_pitch(&self, sample_data: &Arc<Vec<i16>>, rel_pos: f64) -> f32 {
-        // 절대 인덱스 계산
-        let abs_idx = self.start_offset as f64 + rel_pos;
+    fn interpolate_sample_with_pitch(&self, sample_data: &Arc<Vec<i16>>, rel_pos: f32) -> f32 {
+        // 절대 인덱스 계산 (f32 사용)
+        let abs_idx = self.start_offset as f32 + rel_pos;
         let idx = abs_idx as usize;
-        let frac = (abs_idx - idx as f64) as f32;
+        let frac = abs_idx - idx as f32;
 
         if idx >= sample_data.len().saturating_sub(1) {
             return sample_data.last().copied().unwrap_or(0) as f32 / 32768.0;
@@ -537,14 +609,14 @@ impl Voice {
 /// Cubic 보간으로 샘플 가져오기 (고품질 - 현재 미사용이지만 API로 노출)
 impl Voice {
     /// Cubic 보간 샘플 읽기
-    pub fn interpolate_cubic(&self, pos: f64) -> f32 {
+    pub fn interpolate_cubic(&self, pos: f32) -> f32 {
         let sample_data = match &self.sample_data {
             Some(d) => d,
             None => return 0.0,
         };
-        let abs_idx = self.start_offset as f64 + pos;
+        let abs_idx = self.start_offset as f32 + pos;
         let idx = abs_idx as i64;
-        let frac = (abs_idx - idx as f64) as f32;
+        let frac = abs_idx - idx as f32;
 
         if idx < 1 || (idx + 2) as usize >= sample_data.len() {
             return self.interpolate_sample_with_pitch(sample_data, pos);

@@ -24,6 +24,18 @@ fn main() {
                 println!("    - 샘플 수: {}", sf.samples.len());
                 println!("    - 악기 수: {}", sf.instruments.len());
                 println!("    - 프리셋 수: {}", sf.presets.len());
+
+                // 첫 5개 악기 zone의 ADSR/loop 출력
+                for (i, inst) in sf.instruments.iter().take(5).enumerate() {
+                    println!("    [Inst {}] {} (zones: {})", i, inst.name, inst.zones.len());
+                    for (j, z) in inst.zones.iter().take(3).enumerate() {
+                        println!(
+                            "      zone {}: key={:?} vel={:?} sample={:?} A={:.3}s D={:.3}s S={:.2} R={:.3}s atten={:.0}cb",
+                            j, z.key_range, z.velocity_range, z.sample_index,
+                            z.attack, z.decay, z.sustain, z.release, z.attenuation
+                        );
+                    }
+                }
             }
         }
         Err(e) => {
