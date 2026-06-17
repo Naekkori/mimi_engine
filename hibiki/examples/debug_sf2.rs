@@ -63,6 +63,28 @@ fn main() {
                 }
                 println!();
             }
+            // Sample 354 (JazzGuitLoop) data
+            if let Some(s) = sf.samples.get(354) {
+                let start = s.start as usize;
+                let end = (s.start as usize + 30).min(s.end as usize).min(sf.smpl_data.len());
+                print!("Sample 354 (start={} end={}) first 30: ", s.start, s.end);
+                for i in start..end {
+                    print!("{} ", sf.smpl_data[i]);
+                }
+                println!();
+                println!("  start_loop={} end_loop={} sample_rate={} orig_pitch={}", s.start_loop, s.end_loop, s.sample_rate, s.original_pitch);
+            }
+            // Counts of loop start/end == 0 vs > 0
+            let mut zero_loop = 0;
+            let mut nonzero_loop = 0;
+            for s in &sf.samples {
+                if s.start_loop == 0 && s.end_loop == 0 {
+                    zero_loop += 1;
+                } else {
+                    nonzero_loop += 1;
+                }
+            }
+            println!("Samples with loop: {} (no loop: {})", nonzero_loop, zero_loop);
             if let Some(p) = sf.presets.iter().find(|p| p.preset_num == 0 && p.bank == 0) {
                 println!("프리셋 0/0: name='{}', bank={}, zone수={}", p.name, p.bank, p.zones.len());
                 for z in &p.zones {

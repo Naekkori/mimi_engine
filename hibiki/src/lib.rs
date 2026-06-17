@@ -252,10 +252,7 @@ impl HibikiSynth {
             .or_else(|| sf.presets.iter().find(|p| p.bank == 0 && p.preset_num == program))
             .or_else(|| sf.presets.iter().find(|p| p.bank == bank && p.preset_num == 0))
             .or_else(|| sf.presets.iter().find(|p| p.bank == 128 && p.preset_num == program))
-            .ok_or_else(|| {
-                eprintln!("[DEBUG] no preset found for bank={} program={}", bank, program);
-                "Preset not found".to_string()
-            })?;
+            .ok_or("Preset not found")?;
 
         // 노트에 맞는 악기 존 찾기
         for zone in &preset.zones {

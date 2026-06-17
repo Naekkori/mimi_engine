@@ -132,14 +132,7 @@ impl Sf2Parser {
                                     let mut buf = vec![0u8; sub_size as usize];
                                     reader.read_exact(&mut buf)?;
                                     smpl_data_u8 = buf;
-                                    // 1000번째 바이트 근처도 보기
-                                    let mid = smpl_data_u8.len() / 2;
-                                    let preview_first: Vec<String> = smpl_data_u8.iter().take(10).map(|b| b.to_string()).collect();
-                                    let preview_mid: Vec<String> = smpl_data_u8.iter().skip(mid).take(10).map(|b| b.to_string()).collect();
-                                    eprintln!("[DEBUG] smpl: {} bytes, first 10: [{}], mid 10: [{}]", sub_size, preview_first.join(","), preview_mid.join(","));
                                 } else {
-                                    let sub_id_str: String = sub_id.iter().map(|&b| if b.is_ascii_graphic() { b as char } else { '.' }).collect();
-                                    eprintln!("[DEBUG] sdta sub: '{}' size={}", sub_id_str, sub_size);
                                     reader.seek(SeekFrom::Current(sub_size as i64))?;
                                 }
                                 remaining -= sub_size;
@@ -254,9 +247,6 @@ impl Sf2Parser {
         }
 
         // 샘플 데이터 파싱
-        eprintln!("[DEBUG] smpl_data_u8: {} bytes, shdr_data: {} bytes", smpl_data_u8.len(), shdr_data.len());
-        eprintln!("[DEBUG] phdr: {} bytes, pbag: {} bytes, pgen: {} bytes", phdr_data.len(), pbag_data.len(), pgen_data.len());
-        eprintln!("[DEBUG] ihdr: {} bytes, ibag: {} bytes, igen: {} bytes", ihdr_data.len(), ibag_data.len(), igen_data.len());
 
         // smpl_data를 i16으로 한 번만 변환 (Arc로 공유)
         let mut smpl_data_i16: Vec<i16> = Vec::with_capacity(smpl_data_u8.len() / 2);
@@ -283,20 +273,13 @@ impl Sf2Parser {
 
         // 디버그: pgen 41번 통계
         let mut inst_41_count = 0;
-        let mut inst_41_vals = std::collections::HashMap::new();
         let mut i = 0;
         while i + 4 <= pgen_data.len() {
             let t = u16::from_le_bytes([pgen_data[i], pgen_data[i+1]]);
-            let v = i16::from_le_bytes([pgen_data[i+2], pgen_data[i+3]]);
             if t == 41 {
                 inst_41_count += 1;
-                *inst_41_vals.entry(v).or_insert(0) += 1;
             }
             i += 4;
-        }
-        eprintln!("[DEBUG] pgen type=41 count: {}, unique values: {}", inst_41_count, inst_41_vals.len());
-        for (k, v) in inst_41_vals.iter().take(5) {
-            eprintln!("[DEBUG]   val={} count={}", k, v);
         }
 
         // 디버그: igen 53번 통계
@@ -309,7 +292,6 @@ impl Sf2Parser {
             }
             i += 4;
         }
-        eprintln!("[DEBUG] igen type=53 (sample id) count: {}", samp_53_count);
 
         Ok(Sf2File {
             header: header.unwrap_or(SoundFontHeader {
@@ -636,8 +618,8 @@ impl Sf2Parser {
                     let gen_val = cursor.read_i16::<LittleEndian>().unwrap_or(0);
 
                     match gen_type {
-                        41 => {
-                            // Instrument
+                        53 => {
+                            // SampleID (instrument zone이 가리키는 샘플)
                             if gen_val >= 0 && (gen_val as usize) < sample_count {
                                 sample_index = Some(gen_val as usize);
                             }
@@ -781,15 +763,7 @@ impl Sf2Parser {
                 }
 
                 if instrument_index.is_none() && bag_idx < 3 {
-                    eprintln!("[DEBUG] preset bag {} (gen {}..{}): instrument_index None, preset='{}'", bag_idx, gen_start, gen_end, name);
-                    for g in gen_start..gen_end {
-                        let off = g * 4;
-                        if off + 4 <= pgen_data.len() {
-                            let t = u16::from_le_bytes([pgen_data[off], pgen_data[off+1]]);
-                            let v = i16::from_le_bytes([pgen_data[off+2], pgen_data[off+3]]);
-                            eprintln!("[DEBUG]   gen[{}]: type={}, val={}", g, t, v);
-                        }
-                    }
+                    // 디버그: 첫 bag instrument_index None (이건 정상일 수 있음)
                 }
 
                 zones.push(PresetZone {

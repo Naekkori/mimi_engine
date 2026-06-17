@@ -53,16 +53,16 @@ fn main() {
     let notes = [60, 62, 64, 65, 67, 69, 71, 72]; // C4 ~ C5
     for &note in &notes {
         // Note On
-        if let Err(e) = synth.note_on(0, note, 100) {
+        if let Err(e) = synth.note_on(0, note, 127) {
             eprintln!("    NoteOn({}) 실패: {}", note, e);
         }
 
-        // 0.1초 렌더링 (4410 샘플)
+        // 0.2초 렌더링 (8820 샘플)
         let mut peak_l = 0.0f32;
         let mut peak_r = 0.0f32;
         let mut non_zero_count = 0;
 
-        for _ in 0..4410 {
+        for _ in 0..8820 {
             let mut out = [0.0f32; 2];
             if let Err(e) = synth.write_samples(&mut out) {
                 eprintln!("    write_samples 실패: {}", e);

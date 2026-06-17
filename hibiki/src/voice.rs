@@ -127,7 +127,8 @@ impl Voice {
         // 볼륨 (velocity 기반)
         self.volume = (velocity as f32 / 127.0).clamp(0.0, 1.0);
 
-        // ADSR 초기화
+        // ADSR 초기화 (기본값: 빠른 attack, sustain 1.0, 빠른 release)
+        self.adsr.set_params(0.005, 0.05, 1.0, 0.05);
         self.adsr.trigger();
         self.state = VoiceState::Attack;
 
