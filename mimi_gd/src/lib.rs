@@ -297,8 +297,9 @@ impl MimiEngine {
     }
 
     // 현재 엔진 상태 조회
-    // 반환값: Dictionary { state, current_tick, total_tick, current_time_sec, tempo, key, volume, current_tempo, is_bs_detected, current_rhythm }
+    // 반환값: Dictionary { state, current_tick, total_tick, current_time_sec, tempo, key, volume, current_tempo, is_bs_detected, current_rhythm, sf2_version, sf2_author, sf2_name, sf2_comments, sf2_created, sf2_tool, sf2_copyright }
     //   state: 0=Stopped, 1=Playing, 2=Paused
+    //   sf2_*: 사운드폰트 INFO 메타데이터 (없으면 빈 문자열)
     #[func]
     fn get_status(&self) -> Dictionary<Variant, Variant> {
         let mut dict = Dictionary::new();
@@ -338,6 +339,15 @@ impl MimiEngine {
                 dict.set("is_bs_detected", &Variant::from(status.is_bs_detected));
                 dict.set("current_rhythm", &Variant::from(rhythm_int));
                 dict.set("ppq", &Variant::from(status.ppq as i64));
+                // 사운드폰트 INFO 메타데이터 (없으면 빈 문자열로 노출)
+                let sf2 = &status.sf2_info;
+                dict.set("sf2_version", &Variant::from(sf2.version.as_deref().unwrap_or("")));
+                dict.set("sf2_author", &Variant::from(sf2.author.as_deref().unwrap_or("")));
+                dict.set("sf2_name", &Variant::from(sf2.target.as_deref().unwrap_or("")));
+                dict.set("sf2_comments", &Variant::from(sf2.comments.as_deref().unwrap_or("")));
+                dict.set("sf2_created", &Variant::from(sf2.created.as_deref().unwrap_or("")));
+                dict.set("sf2_tool", &Variant::from(sf2.tool.as_deref().unwrap_or("")));
+                dict.set("sf2_copyright", &Variant::from(sf2.copyright.as_deref().unwrap_or("")));
             }
         }
         dict

@@ -2,6 +2,7 @@
 
 mod sequencer;
 mod rhythm_engine;
+pub mod sfinfo;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use fluidlite::{IsSettings, IsSamples, Settings, Synth};
 use midly::TrackEventKind;
@@ -62,6 +63,8 @@ pub struct MimiEngineStatus {
     pub song_key_sig: Option<(i8, bool)>,
     // 미디파일의 PPQ (Ticks Per Quarter Note)
     pub ppq: u32,
+    // 사운드폰트 정보
+    pub sf2_info: sfinfo::SoundFontInfo,
 }
 
 /// 외부 제어용 인터페이스 핸들
@@ -1223,6 +1226,7 @@ pub fn create_mimi_engine(
         current_tempo: 500_000,
         song_key_sig: None,
         ppq: 480,
+        sf2_info: sfinfo::read_sf2_info(sf_path)?,
     }));
     let status_clone = Arc::clone(&player_status);
 
