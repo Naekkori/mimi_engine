@@ -1082,6 +1082,8 @@ dependencies = [
  "fluidlite",
  "midly",
  "ratatui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
