@@ -12,7 +12,7 @@ use std::os::raw::{c_char, c_float, c_int, c_uchar, c_uint};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use mimi_core::{
-    AudioPlaybackContext, MimiCommand, MimiEngineHandle,
+    AudioPlaybackContext, MimiCommand, MimiEngineHandle, NoteTrigger,
     PlayerState, Rhythm, create_mimi_engine,
 };
 
@@ -59,10 +59,37 @@ pub struct MimiFfiStatus {
     pub current_tempo: c_int,
     // $BS 베이스 트랙 검출 여부 (0/1)
     pub is_bs_detected: c_int,
-    // 현재 리듬 모드 (0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug, 7=Edm)
+    // 현재 리듬 모드 (0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug, 7=Edm, 8=Edm2)
     pub current_rhythm: c_int,
     // 미디파일의 PPQ (Ticks Per Quarter Note)
     pub ppq: c_uint,
+    // 원곡 키 시그니처 (샤프는 양수, 플랫은 음수, 단조는 1). 미검출 시 256 (sentinel)
+    pub song_key_sig_sharps: c_int,
+    // 0=Major, 1=Minor, 미검출 시 -1
+    pub song_key_sig_is_minor: c_int,
+}
+
+// 사운드폰트 메타 정보 (core의 sfinfo::SoundFontInfo 매핑)
+// 각 문자열 포인터는 함수 호출 내에서만 유효하며 호출자가 free 하면 안됨
+#[repr(C)]
+pub struct MimiFfiSoundFontInfo {
+    pub version:   *const c_char,
+    pub author:    *const c_char,
+    pub target:    *const c_char,
+    pub comments:  *const c_char,
+    pub created:   *const c_char,
+    pub tool:      *const c_char,
+    pub copyright: *const c_char,
+}
+
+// 노트 트리거 (사운드폰트에 즉시 1음 울리기/끊기 용도)
+#[repr(C)]
+pub struct MimiFfiNoteTrigger {
+    pub channel:  c_uint, // MIDI 채널 (0~15)
+    pub bank_msb: c_uchar, // 뱅크 셀렉트 MSB (0~127)
+    pub bank_lsb: c_uchar, // 뱅크 셀렉트 LSB (0~127)
+    pub program:  c_uchar, // 프로그램 체인지 (0~127)
+    pub note:     c_uchar, // 노트 번호 (0~127)
 }
 
 /// 엔진 핸들 생성 (동기, 블로킹)
@@ -282,7 +309,7 @@ pub extern "C" fn mimi_ffi_seek(handle: *mut MimiFfiHandle, tick: c_uint) {
 }
 
 /// 리듬 모드 설정
-/// rhythm: 0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug, 7=Edm
+/// rhythm: 0=Original, 1=Disco, 2=GoGo, 3=Dance, 4=Techno, 5=Hiphop, 6=Jitterbug, 7=Edm, 8=Edm2
 #[unsafe(no_mangle)]
 pub extern "C" fn mimi_ffi_set_rhythm(handle: *mut MimiFfiHandle, rhythm: c_int) {
     with_ready_handle!(handle, h => {
@@ -294,6 +321,7 @@ pub extern "C" fn mimi_ffi_set_rhythm(handle: *mut MimiFfiHandle, rhythm: c_int)
             5 => Rhythm::Hiphop,
             6 => Rhythm::Jitterbug,
             7 => Rhythm::Edm,
+            8 => Rhythm::Edm2,
             _ => Rhythm::Original,
         };
         let _ = h.send_command(MimiCommand::SetRhythm(r));
@@ -368,18 +396,25 @@ pub extern "C" fn mimi_ffi_get_status(
                     Rhythm::Edm       => 7,
                     Rhythm::Edm2      => 8,
                 };
+                // song_key_sig 미검출 시 sentinel 값 사용 (정상 범위 -7~+7 초과)
+                let (ks_sharps, ks_minor) = match status.song_key_sig {
+                    Some((s, m)) => (s as c_int, if m { 1 } else { 0 }),
+                    None => (256, -1),
+                };
                 unsafe {
-                    (*out).state           = state_int;
-                    (*out).current_tick    = status.current_tick as c_uint;
-                    (*out).total_tick      = status.total_tick as c_uint;
+                    (*out).state            = state_int;
+                    (*out).current_tick     = status.current_tick as c_uint;
+                    (*out).total_tick       = status.total_tick as c_uint;
                     (*out).current_time_sec = status.current_time.as_secs_f32();
-                    (*out).tempo           = status.tempo;
-                    (*out).key             = status.key as c_int;
-                    (*out).volume          = status.volume;
-                    (*out).current_tempo   = status.current_tempo;
-                    (*out).is_bs_detected  = if status.is_bs_detected { 1 } else { 0 };
-                    (*out).current_rhythm  = rhythm_int;
-                    (*out).ppq             = status.ppq as c_uint;
+                    (*out).tempo            = status.tempo;
+                    (*out).key              = status.key as c_int;
+                    (*out).volume           = status.volume;
+                    (*out).current_tempo    = status.current_tempo;
+                    (*out).is_bs_detected   = if status.is_bs_detected { 1 } else { 0 };
+                    (*out).current_rhythm   = rhythm_int;
+                    (*out).ppq              = status.ppq as c_uint;
+                    (*out).song_key_sig_sharps   = ks_sharps;
+                    (*out).song_key_sig_is_minor = ks_minor;
                 }
                 1
             }
@@ -388,6 +423,108 @@ pub extern "C" fn mimi_ffi_get_status(
     } else {
         0
     }
+}
+
+/// 사운드폰트 메타 정보 조회
+/// out의 각 문자열 포인터는 호출 직후에만 유효하므로 즉시 복사하여 보관할 것
+/// 반환값: 성공 시 1, 실패 시 0
+#[unsafe(no_mangle)]
+pub extern "C" fn mimi_ffi_get_soundfont_info(
+    handle: *const MimiFfiHandle,
+    out: *mut MimiFfiSoundFontInfo,
+) -> c_int {
+    if handle.is_null() || out.is_null() {
+        return 0;
+    }
+    let h = unsafe { &*handle };
+    let guard = match h.inner.lock() {
+        Ok(g) => g,
+        Err(_) => return 0,
+    };
+    if let MimiInitState::Ready { handle, .. } = &guard.init_state {
+        if let Ok(status) = handle.get_status() {
+            // 함수 호출 lifetime 동안만 유효한 임시 String 들
+            let version   = status.sf2_info.version.unwrap_or_default();
+            let author    = status.sf2_info.author.unwrap_or_default();
+            let target    = status.sf2_info.target.unwrap_or_default();
+            let comments  = status.sf2_info.comments.unwrap_or_default();
+            let created   = status.sf2_info.created.unwrap_or_default();
+            let tool      = status.sf2_info.tool.unwrap_or_default();
+            let copyright = status.sf2_info.copyright.unwrap_or_default();
+
+            let v = CString::new(version).unwrap_or_default();
+            let a = CString::new(author).unwrap_or_default();
+            let t = CString::new(target).unwrap_or_default();
+            let c = CString::new(comments).unwrap_or_default();
+            let cr = CString::new(created).unwrap_or_default();
+            let tl = CString::new(tool).unwrap_or_default();
+            let cp = CString::new(copyright).unwrap_or_default();
+
+            unsafe {
+                (*out).version   = v.as_ptr();
+                (*out).author    = a.as_ptr();
+                (*out).target    = t.as_ptr();
+                (*out).comments  = c.as_ptr();
+                (*out).created   = cr.as_ptr();
+                (*out).tool      = tl.as_ptr();
+                (*out).copyright = cp.as_ptr();
+            }
+            // CString들이 함수 끝까지 살아있도록 명시적 유지
+            std::mem::forget((v, a, t, c, cr, tl, cp));
+            return 1;
+        }
+    }
+    0
+}
+
+/// 사운드폰트로 1음 즉시 울림 (재생 상태와 무관하게 동작)
+/// trigger: 채널/뱅크/프로그램/노트 정보
+/// 반환값: 성공 시 1, 실패 시 0
+#[unsafe(no_mangle)]
+pub extern "C" fn mimi_ffi_trig_note_on(
+    handle: *mut MimiFfiHandle,
+    trigger: *const MimiFfiNoteTrigger,
+) -> c_int {
+    if handle.is_null() || trigger.is_null() {
+        return 0;
+    }
+    let t = unsafe { &*trigger };
+    let note = NoteTrigger {
+        channel:  t.channel as u32,
+        bank_msb: t.bank_msb,
+        bank_lsb: t.bank_lsb,
+        program:  t.program,
+        note:     t.note as u32,
+    };
+    with_ready_handle!(handle, h => {
+        let _ = h.send_command(MimiCommand::TrigNoteOn(note));
+    });
+    1
+}
+
+/// 사운드폰트로 울린 1음 즉시 끊기
+/// trigger: 채널/노트 정보 (bank/program은 무시됨)
+/// 반환값: 성공 시 1, 실패 시 0
+#[unsafe(no_mangle)]
+pub extern "C" fn mimi_ffi_trig_note_off(
+    handle: *mut MimiFfiHandle,
+    trigger: *const MimiFfiNoteTrigger,
+) -> c_int {
+    if handle.is_null() || trigger.is_null() {
+        return 0;
+    }
+    let t = unsafe { &*trigger };
+    let note = NoteTrigger {
+        channel:  t.channel as u32,
+        bank_msb: t.bank_msb,
+        bank_lsb: t.bank_lsb,
+        program:  t.program,
+        note:     t.note as u32,
+    };
+    with_ready_handle!(handle, h => {
+        let _ = h.send_command(MimiCommand::TrigNoteOff(note));
+    });
+    1
 }
 
 // 엔진정보 조회
