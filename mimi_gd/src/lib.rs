@@ -12,9 +12,21 @@ use godot::builtin::{Dictionary, PackedFloat32Array, StringName, Variant};
 use godot::classes::Node;
 use godot::prelude::*;
 use mimi_core::{
-    AudioPlaybackContext, MimiCommand, MimiEngineHandle, PlayerState, Rhythm, create_mimi_engine,
+    AudioPlaybackContext, MimiCommand, MimiEngineHandle, PlayerState, Rhythm, create_mimi_engine
 };
+use mimi_core::NoteTrigger as CoreNoteTrigger;
 use std::sync::{Arc, Mutex};
+
+// Godot 노출용 트리거 노트 (mimi_core::NoteTrigger의 Godot 래퍼)
+#[derive(GodotClass, Debug, Clone, Copy, PartialEq)]
+#[class(init)]
+pub struct NoteTrigger {
+    pub channel: i64,
+    pub bank_msb: i64,
+    pub bank_lsb: i64,
+    pub program: i64,
+    pub note: i64,
+}
 
 struct MimiExtension;
 
@@ -266,7 +278,45 @@ impl MimiEngine {
             let _ = handle.send_command(MimiCommand::SetRhythm(r));
         }
     }
-
+    // 노트온 커맨드 (에디터 미리듣기용, 뱅크 셀렉트 포함)
+    #[func]
+    fn trigger_note_on(&self, note: Gd<NoteTrigger>) {
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        let Ok(guard) = inner.lock() else { return };
+        if let MimiInitState::Ready { handle, .. } = &guard.init_state {
+            let n = note.bind();
+            let trig = CoreNoteTrigger {
+                channel: n.channel as u32,
+                bank_msb: n.bank_msb as u8,
+                bank_lsb: n.bank_lsb as u8,
+                program: n.program as u8,
+                note: n.note as u32,
+            };
+            let _ = handle.send_command(MimiCommand::TrigNoteOn(trig));
+        }
+    }
+    // 노트오프 커맨드 (에디터 미리듣기용, 채널/노트만 사용)
+    #[func]
+    fn trigger_note_off(&self, note: Gd<NoteTrigger>) {
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        let Ok(guard) = inner.lock() else { return };
+        if let MimiInitState::Ready { handle, .. } = &guard.init_state {
+            // 노트오프는 채널/노트만 의미 있음 (뱅크/프로그램은 코어에서 무시)
+            let n = note.bind();
+            let trig = CoreNoteTrigger {
+                channel: n.channel as u32,
+                bank_msb: 0,
+                bank_lsb: 0,
+                program: 0,
+                note: n.note as u32,
+            };
+            let _ = handle.send_command(MimiCommand::TrigNoteOff(trig));
+        }
+    }
     // 비동기 초기화 진행 상태 조회
     // 반환값: Dictionary { state: i32, progress: f32, message: String }
     //   state: 0=초기화 중, 1=완료, -1=실패

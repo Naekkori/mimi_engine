@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "mimi_core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1103,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "mimi_gd"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "godot",
  "mimi_core",

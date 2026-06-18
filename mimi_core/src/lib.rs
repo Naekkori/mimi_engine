@@ -4,7 +4,7 @@ mod sequencer;
 mod rhythm_engine;
 pub mod sfinfo;
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use fluidlite::{IsSettings, IsSamples, Settings, Synth};
+use fluidlite::{IsSamples, IsSettings, Prog, Settings, Synth};
 use midly::TrackEventKind;
 pub use sequencer::{MidiEngineEvent, MidiFormat, MimiSequencer};
 pub use rhythm_engine::{Rhythm, RhythmEngine, MidiNote, BsChordEvent};
@@ -33,6 +33,8 @@ pub enum MimiCommand {
     Seek(u32),      // 특정 절대 틱(Tick) 위치로 점프
     LoadSong(Vec<u8>), // 새로운 MIDI 바이너리를 시퀀서에 주입 후 리셋 대기
     SetRhythm(Rhythm), // 실시간 리듬 모드 변경 (Original, Disco, GoGo, Techno, Dance, Hiphop, Jitterbug, Edm)
+    TrigNoteOn(NoteTrigger),
+    TrigNoteOff(NoteTrigger)
 }
 
 /// 오디오 엔진의 현재 내부 상태
@@ -42,7 +44,6 @@ pub enum PlayerState {
     Playing,
     Paused,
 }
-
 /// 엔진의 종합 상태 정보 (UI 조회용)
 #[derive(Debug, Clone)]
 pub struct MimiEngineStatus {
@@ -543,6 +544,16 @@ impl AudioPlaybackContext {
                         self.next_rhythm_note_index = 0;
                         self.restore_original_states();
                     }
+                }
+                MimiCommand::TrigNoteOn(note)=>{
+                    // 뱅크 셀렉트 (MSB/LSB) 후 프로그램 체인지, 마지막에 노트 온
+                    let _ = self.synth_a.bank_select(note.channel, note.bank_msb as u32);
+                    let _ = self.synth_a.cc(note.channel, 32, note.bank_lsb as u32);
+                    let _ = self.synth_a.program_change(note.channel, note.program as u32);
+                    let _ = self.synth_a.note_on(note.channel, note.note, 127);
+                },
+                MimiCommand::TrigNoteOff(note)=>{
+                    let _ = self.synth_a.note_off(note.channel, note.note);
                 }
             }
         }
@@ -1358,7 +1369,14 @@ pub fn create_mimi_engine(
 
     Ok((handle, playback_context))
 }
-
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoteTrigger{
+    pub channel: u32,
+    pub bank_msb: u8,   // 뱅크 셀렉트 MSB (0~127)
+    pub bank_lsb: u8,   // 뱅크 셀렉트 LSB (0~127)
+    pub program: u8,    // 프로그램 체인지 (0~127)
+    pub note: u32
+}
 pub fn get_engine_info() -> MimiEngineInfo {
     MimiEngineInfo {
         name: "MimiEngine".to_string(),
