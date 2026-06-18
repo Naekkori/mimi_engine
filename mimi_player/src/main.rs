@@ -687,9 +687,37 @@ fn render(frame: &mut Frame, app: &mut App) {
             frame.render_widget(help_text, help_area);
         }
         AppState::Playing => {
-            // PlayBackInfo 라벨 폭을 일정하게 맞추기 위한 헬퍼
-            fn pad_label(s: &str) -> String {
-                format!("{:<16}", s)
+            // PlayBackInfo 컬럼 폭 상수 (터미널 폭에 맞춰 한 행에 균등 배치)
+            // 각 컬럼은 "라벨: 값" 형식이며, 값이 짧으면 후행 공백으로 폭을 채워서 구분자( | )가 모든 행에서 같은 X 좌표에 오도록 한다
+            const COL_WIDTH: [usize; 4] = [21, 31, 36, 32];
+
+            // 단일 컬럼을 "라벨: 값" Span 목록으로 만들고, 부족한 폭은 후행 공백으로 채움
+            fn col_spans(label: &str, value: &str, value_style: Style, width: usize) -> Vec<Span<'static>> {
+                if label.is_empty() && value.is_empty() {
+                    return vec![Span::raw(" ".repeat(width))];
+                }
+                let mut spans = vec![Span::raw(format!("{}: ", label))];
+                spans.push(Span::styled(value.to_string(), value_style));
+                let len = label.chars().count() + 2 + value.chars().count();
+                if len < width {
+                    spans.push(Span::raw(" ".repeat(width - len)));
+                }
+                spans
+            }
+
+            // 컬럼 배열을 " | " 구분자로 결합한 한 행의 Span 목록을 만든다
+            fn build_info_line(
+                columns: Vec<(&str, &str, Style)>,
+                widths: &[usize],
+            ) -> Vec<Span<'static>> {
+                let mut all_spans: Vec<Span<'static>> = Vec::new();
+                for (i, (label, value, style)) in columns.iter().enumerate() {
+                    if i > 0 {
+                        all_spans.push(Span::raw(" | "));
+                    }
+                    all_spans.extend(col_spans(label, value, *style, widths[i]));
+                }
+                all_spans
             }
 
             let outer = Layout::default()
@@ -704,92 +732,102 @@ fn render(frame: &mut Frame, app: &mut App) {
             frame.render_widget(block.title(" Playback Info ".bold()), main_area);
 
             let info_text = vec![
-                Line::from(vec![
-                    Span::raw(pad_label("Now Playing:")),
-                    Span::styled(
-                        &app.song_name,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::raw(pad_label("| Rhythm:")),
-                    Span::styled(
-                        match app.engine_status.current_rhythm {
-                            Rhythm::Original => "Original Track",
-                            Rhythm::Disco => "DISCO VIBE",
-                            Rhythm::GoGo => "GO-GO BEAT",
-                            Rhythm::Techno => "TECHNO DRIVE",
-                            Rhythm::Dance => "CLUB DANCE",
-                            Rhythm::Hiphop => "HIPHOP BOOM-BAP",
-                            Rhythm::Jitterbug => "JITTERBUG KKUNG-JJA",
-                            Rhythm::Edm => "EDM SUPER SAW",
-                            Rhythm::Edm2 => "EDM2 4/4",
-                        },
-                        Style::default()
-                            .fg(if app.engine_status.current_rhythm == Rhythm::Original { Color::DarkGray } else { Color::Green })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::raw(pad_label("| Current Chord:")),
-                    Span::styled(
-                        if app.engine_status.current_rhythm == Rhythm::Original {
-                            "Original Track (Off)"
-                        } else {
-                            &app.current_chord_name
-                        },
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::raw(pad_label("| BS Track:")),
-                    Span::styled(
-                        if app.engine_status.is_bs_detected {
-                            "YES"
-                        } else {
-                            "NO"
-                        },
-                        Style::default()
-                            .fg(if app.engine_status.is_bs_detected { Color::Green } else { Color::Red })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
+                Line::from(build_info_line(
+                    vec![
+                        (
+                            "Now Playing",
+                            app.song_name.as_str(),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        (
+                            "Rhythm",
+                            match app.engine_status.current_rhythm {
+                                Rhythm::Original => "Original Track",
+                                Rhythm::Disco => "DISCO VIBE",
+                                Rhythm::GoGo => "GO-GO BEAT",
+                                Rhythm::Techno => "TECHNO DRIVE",
+                                Rhythm::Dance => "CLUB DANCE",
+                                Rhythm::Hiphop => "HIPHOP BOOM-BAP",
+                                Rhythm::Jitterbug => "JITTERBUG KKUNG-JJA",
+                                Rhythm::Edm => "EDM SUPER SAW",
+                                Rhythm::Edm2 => "EDM2 4/4",
+                            },
+                            Style::default()
+                                .fg(if app.engine_status.current_rhythm == Rhythm::Original { Color::DarkGray } else { Color::Green })
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        (
+                            "Current Chord",
+                            if app.engine_status.current_rhythm == Rhythm::Original {
+                                "Original Track (Off)"
+                            } else {
+                                app.current_chord_name.as_str()
+                            },
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        (
+                            "BS Track",
+                            if app.engine_status.is_bs_detected { "YES" } else { "NO" },
+                            Style::default()
+                                .fg(if app.engine_status.is_bs_detected { Color::Green } else { Color::Red })
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ],
+                    &COL_WIDTH,
+                )),
                 Line::from({
                     let s = &app.engine_status;
                     let seconds = s.current_time.as_secs();
-                    format!(
-                        "{}{:?}  |  {}{:02}:{:02} ({:>5} / {:>5} tick)   |  {}{:>3}",
-                        pad_label("State:"),
-                        s.state,
-                        pad_label("Time:"),
+                    let state_str = format!("{:?}", s.state);
+                    let time_str = format!(
+                        "{:02}:{:02} ({:>5} / {:>5} tick)",
                         seconds / 60,
                         seconds % 60,
                         s.current_tick,
                         s.total_tick,
-                        pad_label("BPM:"),
-                        if s.current_tempo > 0 { ((60_000_000 / s.current_tempo) as f32 * s.tempo).round() as i32 } else { 0 },
+                    );
+                    let bpm = if s.current_tempo > 0 {
+                        ((60_000_000 / s.current_tempo) as f32 * s.tempo).round() as i32
+                    } else {
+                        0
+                    };
+                    let bpm_str = bpm.to_string();
+                    build_info_line(
+                        vec![
+                            ("State", state_str.as_str(), Style::default()),
+                            ("Time", time_str.as_str(), Style::default()),
+                            ("BPM", bpm_str.as_str(), Style::default()),
+                            ("", "", Style::default()),
+                        ],
+                        &COL_WIDTH,
                     )
                 }),
-                Line::from(format!(
-                    "{}{:+2}{}  |  {}{:.1}x  |  {}{:>3}%  |  {}{}",
-                    pad_label("Key:"),
-                    app.engine_status.key,
-                    if let Some((sf, is_minor)) = app.engine_status.song_key_sig {
-                        format!(
-                            " [{}]",
-                            key_name(sf, is_minor, app.engine_status.key)
-                        )
-                    } else {
-                        String::new()
-                    },
-                    pad_label("Tempo:"),
-                    app.engine_status.tempo,
-                    pad_label("Volume:"),
-                    app.engine_status.volume,
-                    pad_label("SoundFont Name:"),
-                    app.engine_status.sf2_info.target.as_deref().unwrap_or("")
-                )),
+                Line::from({
+                    let key_value = {
+                        let base = format!("{:+2}", app.engine_status.key);
+                        if let Some((sf, is_minor)) = app.engine_status.song_key_sig {
+                            format!("{} [{}]", base, key_name(sf, is_minor, app.engine_status.key))
+                        } else {
+                            base
+                        }
+                    };
+                    let tempo_value = format!("{:.1}x", app.engine_status.tempo);
+                    let volume_value = format!("{}%", app.engine_status.volume);
+                    let sf2_name = app.engine_status.sf2_info.target.as_deref().unwrap_or("");
+                    build_info_line(
+                        vec![
+                            ("Key", key_value.as_str(), Style::default()),
+                            ("Tempo", tempo_value.as_str(), Style::default()),
+                            ("Volume", volume_value.as_str(), Style::default()),
+                            ("SoundFont Name", sf2_name, Style::default()),
+                        ],
+                        &COL_WIDTH,
+                    )
+                }),
             ];
             frame.render_widget(Paragraph::new(info_text), outer[0]);
 
