@@ -784,7 +784,7 @@ fn render(frame: &mut Frame, app: &mut App) {
                     let seconds = s.current_time.as_secs();
                     let state_str = format!("{:?}", s.state);
                     let time_str = format!(
-                        "{:02}:{:02} ({:>5} / {:>5} tick)",
+                        "{:02}:{:02} ({:05}/{:05})",
                         seconds / 60,
                         seconds % 60,
                         s.current_tick,
