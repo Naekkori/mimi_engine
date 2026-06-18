@@ -5,6 +5,9 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use mimi_core::{MimiEngineHandle, create_mimi_engine};
 
+// mimi_player 등 외부 크레이트에서 mimi_cpal 이 사용하는 cpal 버전과 동일한 타입을 참조할 수 있도록 re-export
+pub use cpal;
+
 /// cpal 기본 출력 장치에 mimi_core 엔진을 연결하고 스트림을 시작함
 /// 반환된 cpal::Stream은 호출자가 드롭되지 않도록 직접 관리해야 함
 pub fn spawn_mimi_engine(

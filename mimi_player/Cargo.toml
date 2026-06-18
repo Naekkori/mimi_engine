@@ -1,6 +1,6 @@
 [package]
 name = "mimi_player"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 
 [dependencies]
@@ -11,4 +11,3 @@ midly = "0.5.3"
 ratatui = "0.30.0"
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
-cpal = "0.17.3"

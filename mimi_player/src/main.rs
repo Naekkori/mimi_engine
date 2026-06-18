@@ -1,5 +1,4 @@
 use color_eyre::eyre::eyre;
-use cpal;
 use crossterm::event;
 use mimi_core::{KEY_MAX, KEY_MIN, TEMPO_MAX, TEMPO_MIN, VOLUME_MAX, VOLUME_MIN, Rhythm};
 use mimi_core::{MimiCommand, MimiEngineHandle, MimiEngineStatus, PlayerState};
@@ -23,7 +22,7 @@ enum AppState {
 
 enum LoadingEvent {
     Progress(f32, String),
-    Success((MimiEngineHandle, cpal::Stream)),
+    Success((MimiEngineHandle, mimi_cpal::cpal::Stream)),
     Error(String),
 }
 
@@ -38,7 +37,7 @@ struct App {
     // 재생 관련
     song_name: String,
     engine: Option<MimiEngineHandle>,
-    _stream: Option<cpal::Stream>,
+    _stream: Option<mimi_cpal::cpal::Stream>,
     // 엔진에서 읽어온 최신 상태 (캐시)
     engine_status: MimiEngineStatus,
 
@@ -83,6 +82,7 @@ impl App {
                 current_tempo: 500_000,
                 song_key_sig: None,
                 ppq: 480,
+                sf2_info: mimi_core::sfinfo::SoundFontInfo::default(),
             },
             file_list: Vec::new(),
             selected_index: 0,
@@ -159,7 +159,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> color_eyre::Result<(
 
     std::thread::spawn(move || {
         let tx_prog = tx_clone.clone();
-        let load_res = || -> Result<(MimiEngineHandle, cpal::Stream), String> {
+        let load_res = || -> Result<(MimiEngineHandle, mimi_cpal::cpal::Stream), String> {
             let (handle, stream) =
                 mimi_cpal::spawn_mimi_engine(&sf_path_str, move |p, msg| {
                     let _ = tx_prog.send(LoadingEvent::Progress(p, msg.to_string()));
@@ -687,6 +687,11 @@ fn render(frame: &mut Frame, app: &mut App) {
             frame.render_widget(help_text, help_area);
         }
         AppState::Playing => {
+            // PlayBackInfo 라벨 폭을 일정하게 맞추기 위한 헬퍼
+            fn pad_label(s: &str) -> String {
+                format!("{:<16}", s)
+            }
+
             let outer = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -700,14 +705,15 @@ fn render(frame: &mut Frame, app: &mut App) {
 
             let info_text = vec![
                 Line::from(vec![
-                    Span::raw("Now Playing: "),
+                    Span::raw(pad_label("Now Playing:")),
                     Span::styled(
                         &app.song_name,
                         Style::default()
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw("   |   Rhythm: "),
+                    Span::raw("  "),
+                    Span::raw(pad_label("| Rhythm:")),
                     Span::styled(
                         match app.engine_status.current_rhythm {
                             Rhythm::Original => "Original Track",
@@ -724,7 +730,8 @@ fn render(frame: &mut Frame, app: &mut App) {
                             .fg(if app.engine_status.current_rhythm == Rhythm::Original { Color::DarkGray } else { Color::Green })
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw("   |   Current Chord: "),
+                    Span::raw("  "),
+                    Span::raw(pad_label("| Current Chord:")),
                     Span::styled(
                         if app.engine_status.current_rhythm == Rhythm::Original {
                             "Original Track (Off)"
@@ -735,7 +742,8 @@ fn render(frame: &mut Frame, app: &mut App) {
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw("   |   BS Track: "),
+                    Span::raw("  "),
+                    Span::raw(pad_label("| BS Track:")),
                     Span::styled(
                         if app.engine_status.is_bs_detected {
                             "YES"
@@ -751,17 +759,21 @@ fn render(frame: &mut Frame, app: &mut App) {
                     let s = &app.engine_status;
                     let seconds = s.current_time.as_secs();
                     format!(
-                        "State: {:?}  |  Time: {:02}:{:02} ({:>5} / {:>5} tick)   |  BPM: {:>3}",
+                        "{}{:?}  |  {}{:02}:{:02} ({:>5} / {:>5} tick)   |  {}{:>3}",
+                        pad_label("State:"),
                         s.state,
+                        pad_label("Time:"),
                         seconds / 60,
                         seconds % 60,
                         s.current_tick,
                         s.total_tick,
+                        pad_label("BPM:"),
                         if s.current_tempo > 0 { ((60_000_000 / s.current_tempo) as f32 * s.tempo).round() as i32 } else { 0 },
                     )
                 }),
                 Line::from(format!(
-                    "Key: {:+2}{}  |  Tempo: {:.1}x  |  Volume: {:>3}%  |  Change Rhythm: [r]",
+                    "{}{:+2}{}  |  {}{:.1}x  |  {}{:>3}%  |  {}{}",
+                    pad_label("Key:"),
                     app.engine_status.key,
                     if let Some((sf, is_minor)) = app.engine_status.song_key_sig {
                         format!(
@@ -771,8 +783,12 @@ fn render(frame: &mut Frame, app: &mut App) {
                     } else {
                         String::new()
                     },
+                    pad_label("Tempo:"),
                     app.engine_status.tempo,
-                    app.engine_status.volume
+                    pad_label("Volume:"),
+                    app.engine_status.volume,
+                    pad_label("SoundFont Name:"),
+                    app.engine_status.sf2_info.target.as_deref().unwrap_or("")
                 )),
             ];
             frame.render_widget(Paragraph::new(info_text), outer[0]);
